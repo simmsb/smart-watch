@@ -1,15 +1,19 @@
 #![feature(const_fn_floating_point_arithmetic)]
 #![feature(const_float_bits_conv)]
 #![feature(adt_const_params)]
+#![feature(generic_const_exprs)]
 
+use std::sync::atomic::AtomicU16;
+use std::sync::Arc;
 use std::time::Duration;
 
-use esp_idf_hal::gpio::{Gpio27, Output};
+use color_eyre::{eyre::eyre, Result};
+use embassy_util::Forever;
+use embedded_hal::digital::blocking::InputPin;
+use esp_idf_hal::gpio::{Gpio27, Gpio39, Output, SubscribedInput};
 use esp_idf_hal::prelude::*;
-use esp_idf_hal::rmt::config::TransmitConfig;
-use esp_idf_hal::rmt::{FixedLengthSignal, HwChannel, PinState, Pulse, Transmit};
+use esp_idf_hal::rmt::HwChannel;
 use esp_idf_sys as _;
-use eyre::{eyre, Result};
 use smart_leds::SmartLedsWrite;
 
 use crate::dither::GammaDither;
@@ -17,38 +21,55 @@ use crate::dither::GammaDither;
 mod dither;
 mod leds;
 
-fn leds(pin: Gpio27<Output>, rmt: impl HwChannel) -> Result<()> {
+fn leds(counter: Arc<AtomicU16>, pin: Gpio27<Output>, rmt: impl HwChannel) -> Result<()> {
     fn conv_colour(c: cichlid::ColorRGB) -> smart_leds::RGB8 {
         smart_leds::RGB8::new(c.r, c.g, c.b)
     }
 
-    let mut leds = leds::Esp32Neopixel::new(pin, rmt)?;
+    const LEDS: usize = 25;
+    static MEM: Forever<leds::Esp32NeopixelMem<25>> = Forever::new();
+    let mem = MEM.put_with(|| leds::Esp32NeopixelMem::<25>::new());
+    let mut leds = leds::Esp32Neopixel::<_, _, 25>::new(pin, rmt, mem)?;
 
-    const STEPS: usize = 8;
-    const LEDS: u8 = 25;
-
-    let mut i = 0u16;
+    const STEPS: usize = 4;
 
     loop {
-        // for step in 0..STEPS {
-            let it = (0..LEDS).map(|x| {
+        let i = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        for step in 0..STEPS {
+            let it = (0..(LEDS as u8)).map(|x| {
                 let v = cichlid::HSV {
                     h: ((i / 4) as u8).wrapping_add(x * 10),
-                    s: 10,
-                    v: 10,
+                    s: 255,
+                    v: 80,
                 };
                 conv_colour(v.to_rgb_rainbow())
             });
 
-            // let _ = leds.write(GammaDither::<STEPS, 28>::dither(step, it));
-            let _ = leds.write(it);
+            let _ = leds.write(GammaDither::<STEPS, 15>::dither(step, it));
 
-            // std::thread::sleep(Duration::from_micros(100));
-            std::thread::sleep(Duration::from_millis(10));
-        // }
-
-        i = i.wrapping_add(1);
+            std::thread::sleep(Duration::from_micros(100));
+        }
     }
+}
+
+macro_rules! pin_handler {
+    ($pin:expr, $cb:expr) => {{
+        use ::embedded_svc::event_bus::{EventBus, Postbox};
+        let mut notif = ::esp_idf_svc::notify::EspNotify::new(&::esp_idf_svc::notify::Configuration::default())?;
+        let mut rx = notif.clone();
+        let cb = $cb;
+        let p = unsafe {
+            $pin.into_subscribed(
+                move || {
+                    let _ = notif.post(&0, None);
+                },
+                ::esp_idf_hal::gpio::InterruptType::AnyEdge,
+            )?
+        };
+        rx.subscribe(move |_| {
+            (cb)(&p);
+        })?
+    }};
 }
 
 fn main() -> Result<()> {
@@ -56,6 +77,7 @@ fn main() -> Result<()> {
     // or else some patches to the runtime implemented by esp-idf-sys might not link properly.
     esp_idf_sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+    color_eyre::install()?;
 
     println!("Hello, world!");
 
@@ -63,10 +85,21 @@ fn main() -> Result<()> {
 
     let pins = peripherals.pins;
 
+    let led_counter = Arc::new(AtomicU16::new(0));
+
     let led_thread = {
         let pin = pins.gpio27.into_output()?;
-        std::thread::spawn(move || leds(pin, peripherals.rmt.channel0).unwrap())
+        let led_counter = Arc::clone(&led_counter);
+        std::thread::spawn(move || leds(led_counter, pin, peripherals.rmt.channel0).unwrap())
     };
+
+    let btn_callback = move |p: &Gpio39<SubscribedInput>| {
+        if p.is_high().unwrap() {
+            led_counter.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    };
+
+    let _button = pin_handler!(pins.gpio39, btn_callback);
 
     led_thread
         .join()

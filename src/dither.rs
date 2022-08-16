@@ -148,7 +148,6 @@ const fn f32_exp(a: f32) -> f32 {
 
 const fn f32_powf(a: f32, n: f32) -> f32 {
     if a > 0.0 {
-        let y = f32_ln(a);
         f32_exp(n * f32_ln(a))
     } else if a == 0.0 {
         return 0.0;
