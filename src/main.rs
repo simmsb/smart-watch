@@ -3,64 +3,24 @@
 #![feature(adt_const_params)]
 #![feature(generic_const_exprs)]
 #![feature(mixed_integer_ops)]
+#![feature(core_ffi_c)]
 
 use std::sync::atomic::AtomicU8;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
 use color_eyre::{eyre::eyre, Result};
-use embassy_util::Forever;
 use embedded_hal::digital::blocking::InputPin;
-use esp_idf_hal::gpio::{Gpio27, Gpio39, Output, SubscribedInput};
+use esp_idf_hal::gpio::{Gpio39, SubscribedInput};
 use esp_idf_hal::prelude::*;
-use esp_idf_hal::rmt::HwChannel;
 use esp_idf_sys as _;
-use smart_leds::{SmartLedsWrite, RGB8};
 
-use crate::dither::GammaDither;
-use crate::font::ScrollingRender;
-
-mod dither;
-mod font;
-mod leds;
-
-fn rgb(x: u8, y: u8, offs: u8) -> RGB8 {
-    fn conv_colour(c: cichlid::ColorRGB) -> smart_leds::RGB8 {
-        smart_leds::RGB8::new(c.r, c.g, c.b)
-    }
-
-    let v = cichlid::HSV {
-        h: ((y / 4) as u8).wrapping_add(x * 10).wrapping_add(offs),
-        s: 200,
-        v: 70,
-    };
-
-    conv_colour(v.to_rgb_rainbow())
-}
-
-fn leds(counter: Arc<AtomicU8>, pin: Gpio27<Output>, rmt: impl HwChannel) -> Result<()> {
-    static MEM: Forever<leds::Esp32NeopixelMem<25>> = Forever::new();
-    let mem = MEM.put_with(|| leds::Esp32NeopixelMem::<25>::new());
-    let mut leds = leds::Esp32Neopixel::<_, _, 25>::new(pin, rmt, mem)?;
-
-    const STEPS: usize = 4;
-
-    let mut message = ScrollingRender::from_str("hello world")?;
-
-    loop {
-        for _ in 0..8 {
-            let i = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            for step in 0..STEPS {
-                let it = message.render(|x, y| rgb(x, y, i as u8));
-
-                let _ = leds.write(GammaDither::<STEPS, 15>::dither(step, it));
-
-                std::thread::sleep(Duration::from_micros(100));
-            }
-        }
-        message.step();
-    }
-}
+pub mod display;
+pub mod dither;
+pub mod espnow;
+pub mod font;
+pub mod leds;
+pub mod message;
+pub mod bluetooth;
 
 macro_rules! pin_handler {
     ($pin:expr, $cb:expr) => {{
@@ -97,23 +57,27 @@ fn main() -> Result<()> {
 
     let pins = peripherals.pins;
 
-    let led_counter = Arc::new(AtomicU8::new(0));
+    // let bus = Arc::new(Mutex::new(bus::Bus::<message::Message>::new(4)));
+    // let _espnow_data = espnow::espnow_setup(Arc::clone(&bus))?;
 
+    bluetooth::init_ble(peripherals.uart0)?;
+
+    let led_counter = Arc::new(AtomicU8::new(0));
     let led_thread = {
         let pin = pins.gpio27.into_output()?;
         let led_counter = Arc::clone(&led_counter);
         std::thread::Builder::new()
             .stack_size(8192)
-            .spawn(move || leds(led_counter, pin, peripherals.rmt.channel0).unwrap())?
+            .spawn(move || display::led_task(led_counter, pin, peripherals.rmt.channel0).unwrap())?
     };
 
-    // let btn_callback = move |p: &Gpio39<SubscribedInput>| {
-    //     if p.is_high().unwrap() {
-    //         led_counter.store(0, std::sync::atomic::Ordering::Relaxed);
-    //     }
-    // };
+    let btn_callback = move |p: &Gpio39<SubscribedInput>| {
+        if p.is_high().unwrap() {
+            led_counter.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    };
 
-    // let _button = pin_handler!(pins.gpio39, btn_callback);
+    let _button = pin_handler!(pins.gpio39, btn_callback);
 
     led_thread
         .join()
