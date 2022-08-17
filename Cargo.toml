@@ -11,6 +11,7 @@ bitvec = "1.0.1"
 cichlid = { git = "https://github.com/simmsb/cichlid.git", version = "0.2.1", features = [
   "nightly",
 ] }
+codepage-437 = "0.1.0"
 color-eyre = "0.6.2"
 embassy-util = { git = "https://github.com/embassy-rs/embassy", version = "0.1.0" }
 embedded-hal = "1.0.0-alpha.8"

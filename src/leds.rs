@@ -57,6 +57,38 @@ fn into_bits(colour: RGB8) -> impl Iterator<Item = bool> {
     bitvec::array::BitArray::<[u8; 3], Msb0>::new([colour.r, colour.g, colour.b]).into_iter()
 }
 
+pub static PATTERN: &[(u8, u8)] = &[
+    (0, 0),
+    (1, 0),
+    (2, 0),
+    (3, 0),
+    (4, 0),
+    (0, 1),
+    (1, 1),
+    (2, 1),
+    (3, 1),
+    (4, 1),
+    (0, 2),
+    (1, 2),
+    (2, 2),
+    (3, 2),
+    (4, 2),
+    (0, 3),
+    (1, 3),
+    (2, 3),
+    (3, 3),
+    (4, 3),
+    (0, 4),
+    (1, 4),
+    (2, 4),
+    (3, 4),
+    (4, 4),
+];
+
+pub fn with_positions<I>(f: impl Fn(u8, u8) -> I) -> impl Iterator<Item = ((u8, u8), I)> {
+    PATTERN.iter().cloned().map(move |(x, y)| ((x, y), f(x, y)))
+}
+
 impl<'a, P: OutputPin, R: HwChannel, const LEN: usize> smart_leds_trait::SmartLedsWrite
     for Esp32Neopixel<'a, P, R, LEN>
 where
