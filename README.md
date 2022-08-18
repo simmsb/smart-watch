@@ -1,1 +1,1 @@
-# ESP32 powered scrolling rust display, configured over BLE
+# Not sure, some ESP32 smart watch maybe?

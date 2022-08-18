@@ -8,21 +8,23 @@
 #![feature(const_unsafecell_get_mut)]
 
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use color_eyre::{eyre::eyre, Result};
 use embedded_hal::digital::blocking::InputPin;
 use esp_idf_hal::gpio::{Gpio39, SubscribedInput};
-use esp_idf_hal::prelude::*;
+use esp_idf_hal::{i2c, prelude::*};
 use esp_idf_sys as _;
+use tracing::info;
+
+use crate::rtc::EspRtc;
+use crate::utils::I2c0;
 
 pub mod bluetooth;
-pub mod display;
-pub mod dither;
-pub mod espnow;
-pub mod font;
-pub mod leds;
 pub mod message;
+pub mod rtc;
+pub mod utils;
 
 macro_rules! pin_handler {
     ($pin:expr, $cb:expr) => {{
@@ -59,34 +61,24 @@ fn main() -> Result<()> {
 
     let pins = peripherals.pins;
 
-    // let bus = Arc::new(Mutex::new(bus::Bus::<message::Message>::new(4)));
-    // let _espnow_data = espnow::espnow_setup(Arc::clone(&bus))?;
+    let i2c0 = I2c0::new(i2c::Master::new(
+        peripherals.i2c0,
+        i2c::MasterPins {
+            sda: pins.gpio21.into_input_output()?,
+            scl: pins.gpio22.into_input_output()?,
+        },
+        i2c::config::MasterConfig::default().baudrate(400.kHz().into()),
+    )?);
 
-    bluetooth::init_ble(peripherals.uart0)?;
+    let mut rtc = EspRtc::new(i2c0)?;
 
-    let led_heart = Arc::new(AtomicBool::new(false));
+    loop {
+        info!("The time is: {}", rtc.read()?);
 
-    let led_thread = {
-        let pin = pins.gpio27.into_output()?;
-        let led_heart = Arc::clone(&led_heart);
-        std::thread::Builder::new()
-            .stack_size(8192)
-            .spawn(move || display::led_task(led_heart, pin, peripherals.rmt.channel0).unwrap())?
-    };
+        std::thread::sleep(Duration::from_secs(1));
+    }
 
-    let btn_callback = move |p: &Gpio39<SubscribedInput>| {
-        if p.is_low().unwrap() {
-            led_heart.store(true, std::sync::atomic::Ordering::Relaxed);
-        } else {
-            led_heart.store(false, std::sync::atomic::Ordering::Relaxed);
-        }
-    };
-
-    let _button = pin_handler!(pins.gpio39, btn_callback);
-
-    led_thread
-        .join()
-        .map_err(|e| eyre!("led thread fucked up {:?}", e))?;
+    // bluetooth::init_ble(peripherals.uart0)?;
 
     Ok(())
 }

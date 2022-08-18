@@ -147,10 +147,7 @@ version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba3569f383e8f1598449f1a423e72e99569137b47740b1da11ef19af3d5c3223"
 dependencies = [
- "lazy_static",
  "memchr",
- "regex-automata",
- "serde",
 ]
 
 [[package]]
@@ -163,12 +160,6 @@ dependencies = [
  "num_cpus",
  "parking_lot_core",
 ]
-
-[[package]]
-name = "bytemuck"
-version = "1.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44f8cb64b4147a528e1e9e77583739e683541973295b35f3bd7e78d42c5971fd"
 
 [[package]]
 name = "byteorder"
@@ -229,11 +220,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
-name = "cichlid"
-version = "0.2.1"
-source = "git+https://github.com/simmsb/cichlid.git#a56471d56cc59dd171b7004b34467c3db3ae0f98"
-
-[[package]]
 name = "clang-sys"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -282,15 +268,6 @@ name = "cobs"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67ba02a97a2bd10f4b59b25c7973101c79642302776489e030cd13cdab09ed15"
-
-[[package]]
-name = "codepage-437"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e40c1169585d8d08e5675a39f2fc056cd19a258fc4cba5e3bbf4a9c1026de535"
-dependencies = [
- "csv",
-]
 
 [[package]]
 name = "color-eyre"
@@ -401,28 +378,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd98742e4fdca832d40cab219dc2e3048de17d873248f83f17df47c1bea70956"
 dependencies = [
  "cty",
- "memchr",
-]
-
-[[package]]
-name = "csv"
-version = "1.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22813a6dc45b335f9bade10bf7271dc477e81113e89eb251a0bc2a8a81c536e1"
-dependencies = [
- "bstr",
- "csv-core",
- "itoa 0.4.8",
- "ryu",
- "serde",
-]
-
-[[package]]
-name = "csv-core"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b2466559f260f48ad25fe6317b3c8dac77b5bdb5763ac7d9d6103530663bc90"
-dependencies = [
  "memchr",
 ]
 
@@ -641,33 +596,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "esp-32-rust-testing"
+name = "eos"
 version = "0.1.0"
+source = "git+https://github.com/rapptz/eos#b1be8407f44b6c78bfefef1e40b22cd75cfc0cba"
 dependencies = [
- "anyhow",
- "bitvec",
- "bus",
- "cichlid",
- "codepage-437",
- "color-eyre",
- "const-zero",
- "embassy-util",
- "embedded-hal 1.0.0-alpha.8",
- "embedded-svc",
- "embuild 0.30.2",
- "esp-idf-hal",
- "esp-idf-svc",
- "esp-idf-sys",
- "heapless",
- "itertools",
- "once_cell",
- "postcard",
- "serde",
- "smart-leds",
- "smart-leds-trait",
- "tracing",
- "uuid",
+ "eos-format-spec-macro",
+ "libc",
 ]
+
+[[package]]
+name = "eos-format-spec-macro"
+version = "0.1.0"
+source = "git+https://github.com/rapptz/eos#b1be8407f44b6c78bfefef1e40b22cd75cfc0cba"
 
 [[package]]
 name = "esp-idf-hal"
@@ -990,12 +930,6 @@ dependencies = [
 
 [[package]]
 name = "itoa"
-version = "0.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b71991ff56294aa922b450139ee08b3bfc70982c6b2c7562771375cf73542dd4"
-
-[[package]]
-name = "itoa"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c8af84674fe1f223a982c933a0ee1086ac4d4052aa0fb8060c12c6ad838e754"
@@ -1183,6 +1117,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcf8563"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "414eba21a7b88aabafda54dd64dfb4d35862d50ee76777c9a7b60cccf20437f6"
+dependencies = [
+ "embedded-hal 0.2.7",
+]
+
+[[package]]
 name = "peeking_take_while"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1313,12 +1256,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "regex-automata"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c230d73fb8d8c1b9c0b3135c5142a8acee3a0558fb8db5cf1cb65f8d7862132"
-
-[[package]]
 name = "regex-syntax"
 version = "0.6.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1344,15 +1281,6 @@ dependencies = [
  "num_cpus",
  "rayon",
  "winapi",
-]
-
-[[package]]
-name = "rgb"
-version = "0.8.33"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3b221de559e4a29df3b957eec92bc0de6bc8eaf6ca9cfed43e5e1d67ff65a34"
-dependencies = [
- "bytemuck",
 ]
 
 [[package]]
@@ -1483,7 +1411,7 @@ version = "1.0.83"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38dd04e3c8279e75b31ef29dbdceebfe5ad89f4d0937213c53f7d49d01b3d5a7"
 dependencies = [
- "itoa 1.0.3",
+ "itoa",
  "ryu",
  "serde",
 ]
@@ -1519,21 +1447,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fd0db749597d91ff862fd1d55ea87f7855a744a8425a64695b6fca237d1dad1"
 
 [[package]]
-name = "smart-leds"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38dd45fa275f70b4110eac5f5182611ad384f88bb22b68b9a9c3cafd7015290b"
+name = "smart-watch"
+version = "0.1.0"
 dependencies = [
- "smart-leds-trait",
-]
-
-[[package]]
-name = "smart-leds-trait"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebf6d833fa93f16a1c1874e62c2aebe8567e5bdd436d59bf543ed258b6f7a8e3"
-dependencies = [
- "rgb",
+ "anyhow",
+ "bitvec",
+ "bus",
+ "color-eyre",
+ "const-zero",
+ "embassy-util",
+ "embedded-hal 0.2.7",
+ "embedded-hal 1.0.0-alpha.8",
+ "embedded-svc",
+ "embuild 0.30.2",
+ "eos",
+ "esp-idf-hal",
+ "esp-idf-svc",
+ "esp-idf-sys",
+ "heapless",
+ "itertools",
+ "once_cell",
+ "pcf8563",
+ "postcard",
+ "serde",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
