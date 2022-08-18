@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use smart_leds::RGB8;
 
 use crate::leds;
@@ -321,8 +323,10 @@ pub struct ScrollingRender {
     scroll: u16,
 }
 
-impl ScrollingRender {
-    pub fn from_str(s: &str) -> color_eyre::Result<Self> {
+impl FromStr for ScrollingRender {
+    type Err = color_eyre::Report;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut message = from_str(s)?;
         message.push(FONT[0x20]);
         message.push(FONT[0x20]);
@@ -333,7 +337,9 @@ impl ScrollingRender {
             scroll: 0,
         })
     }
+}
 
+impl ScrollingRender {
     pub fn from_glyphs(mut message: Vec<Glyph>) -> Self {
         message.push(FONT[0x20]);
         message.push(FONT[0x20]);
@@ -348,32 +354,16 @@ impl ScrollingRender {
     pub fn render(&self, colour: impl Fn(u8, u8) -> RGB8) -> impl Iterator<Item = RGB8> {
         let left = self.message[self.scroll as usize % self.message.len()];
         let right = self.message[(self.scroll as usize + 1) % self.message.len()];
+        let offset = self.char_offset;
 
-        let it = leds::with_positions(colour).collect::<Vec<_>>();
-        // let it = left
-        //     .mask_with_x_offset(0, it.into_iter())
-        //     .collect::<Vec<_>>();
-        let it = left
-            .mask_with_x_offset(self.char_offset as i8, it.into_iter())
-            .collect::<Vec<_>>();
-        let it = right
-            .mask_with_x_offset((self.char_offset as i8) - 6, it.into_iter())
-            .collect::<Vec<_>>();
-        let it = it
-            .into_iter()
-            .map(|((x, y), v)| {
-                let v = if x == (5 - self.char_offset) {
-                    None
-                } else {
-                    Some(v)
-                };
-                ((x, y), v)
-            })
-            .collect::<Vec<_>>();
-        it.into_iter()
-            .map(|(_, v)| v.flatten().flatten().unwrap_or(RGB8::new(0, 0, 0)))
-        // it.into_iter()
-        //     .map(|(_, v)| v.unwrap_or(RGB8::new(0, 0, 0)))
+        let it = leds::with_positions(colour);
+        let it = left.mask_with_x_offset(self.char_offset as i8, it);
+        let it = right.mask_with_x_offset((self.char_offset as i8) - 6, it);
+        let it = it.map(move |((x, y), v)| {
+            let v = if x == (5 - offset) { None } else { Some(v) };
+            ((x, y), v)
+        });
+        it.map(|(_, v)| v.flatten().flatten().unwrap_or(RGB8::new(0, 0, 0)))
     }
 
     pub fn step(&mut self) -> bool {
@@ -388,6 +378,6 @@ impl ScrollingRender {
             return true;
         }
 
-        return false;
+        false
     }
 }

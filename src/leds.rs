@@ -26,6 +26,15 @@ where
     }
 }
 
+impl<const LEN: usize> Default for Esp32NeopixelMem<LEN>
+where
+    FixedLengthSignal<{ LEN * 24 }>: Sized,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct Esp32Neopixel<'a, P: OutputPin, R: HwChannel, const LEN: usize>
 where
     FixedLengthSignal<{ LEN * 24 }>: Sized,

@@ -34,6 +34,7 @@ smart-leds = "0.3.0"
 smart-leds-trait = "0.2.1"
 # smol = "1.2.5"
 tracing = { version = "0.1.36", features = ["log", "log-always"] }
+uuid = "1.1.2"
 
 [features]
 experimental = [

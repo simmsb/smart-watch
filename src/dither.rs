@@ -1,3 +1,5 @@
+#![allow(clippy::excessive_precision)]
+
 use smart_leds::RGB8;
 
 const fn f32_abs(a: f32) -> f32 {
@@ -102,8 +104,7 @@ const fn f32_exp_smallx(a: f32) -> f32 {
     let total = 1.0 + (a / 4.0) * total;
     let total = 1.0 + (a / 3.0) * total;
     let total = 1.0 + (a / 2.0) * total;
-    let total = 1.0 + (a / 1.0) * total;
-    total
+    1.0 + (a / 1.0) * total
 }
 
 const fn f32_set_exponent(a: f32, exponent: i32) -> f32 {
@@ -150,7 +151,7 @@ const fn f32_powf(a: f32, n: f32) -> f32 {
     if a > 0.0 {
         f32_exp(n * f32_ln(a))
     } else if a == 0.0 {
-        return 0.0;
+        0.0
     } else {
         panic!("no")
     }

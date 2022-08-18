@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,7 +22,7 @@ fn rgb(x: u8, y: u8, offs: u8) -> RGB8 {
     let v = cichlid::HSV {
         h: ((y / 4) as u8).wrapping_add(x * 10).wrapping_add(offs),
         s: 200,
-        v: 70,
+        v: 60,
     };
 
     conv_colour(v.to_rgb_rainbow())
@@ -33,7 +34,7 @@ pub fn led_task(
     rmt: impl HwChannel,
 ) -> color_eyre::Result<()> {
     static MEM: Forever<leds::Esp32NeopixelMem<25>> = Forever::new();
-    let mem = MEM.put_with(|| leds::Esp32NeopixelMem::<25>::new());
+    let mem = MEM.put_with(leds::Esp32NeopixelMem::<25>::new);
     let mut leds = leds::Esp32Neopixel::<_, _, 25>::new(pin, rmt, mem)?;
 
     const STEPS: usize = 4;

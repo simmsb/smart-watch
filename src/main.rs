@@ -15,9 +15,6 @@ use embedded_hal::digital::blocking::InputPin;
 use esp_idf_hal::gpio::{Gpio39, SubscribedInput};
 use esp_idf_hal::prelude::*;
 use esp_idf_sys as _;
-use tracing::info;
-
-use crate::bluetooth::CURRENT_MESSAGE;
 
 pub mod bluetooth;
 pub mod display;
@@ -79,10 +76,8 @@ fn main() -> Result<()> {
 
     let btn_callback = move |p: &Gpio39<SubscribedInput>| {
         if p.is_low().unwrap() {
-            info!("Button down");
             led_heart.store(true, std::sync::atomic::Ordering::Relaxed);
         } else {
-            info!("Button up");
             led_heart.store(false, std::sync::atomic::Ordering::Relaxed);
         }
     };
