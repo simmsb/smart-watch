@@ -4,23 +4,28 @@
 #![feature(generic_const_exprs)]
 #![feature(mixed_integer_ops)]
 #![feature(core_ffi_c)]
+#![feature(const_mut_refs)]
+#![feature(const_unsafecell_get_mut)]
 
-use std::sync::atomic::AtomicU8;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use color_eyre::{eyre::eyre, Result};
 use embedded_hal::digital::blocking::InputPin;
 use esp_idf_hal::gpio::{Gpio39, SubscribedInput};
 use esp_idf_hal::prelude::*;
 use esp_idf_sys as _;
+use tracing::info;
 
+use crate::bluetooth::CURRENT_MESSAGE;
+
+pub mod bluetooth;
 pub mod display;
 pub mod dither;
 pub mod espnow;
 pub mod font;
 pub mod leds;
 pub mod message;
-pub mod bluetooth;
 
 macro_rules! pin_handler {
     ($pin:expr, $cb:expr) => {{
@@ -35,7 +40,7 @@ macro_rules! pin_handler {
                 move || {
                     let _ = notif.post(&0, None);
                 },
-                ::esp_idf_hal::gpio::InterruptType::AnyEdge,
+                ::esp_idf_hal::gpio::InterruptType::NegEdge,
             )?
         };
         rx.subscribe(move |_| {
@@ -62,18 +67,23 @@ fn main() -> Result<()> {
 
     bluetooth::init_ble(peripherals.uart0)?;
 
-    let led_counter = Arc::new(AtomicU8::new(0));
+    let led_heart = Arc::new(AtomicBool::new(false));
+
     let led_thread = {
         let pin = pins.gpio27.into_output()?;
-        let led_counter = Arc::clone(&led_counter);
+        let led_heart = Arc::clone(&led_heart);
         std::thread::Builder::new()
             .stack_size(8192)
-            .spawn(move || display::led_task(led_counter, pin, peripherals.rmt.channel0).unwrap())?
+            .spawn(move || display::led_task(led_heart, pin, peripherals.rmt.channel0).unwrap())?
     };
 
     let btn_callback = move |p: &Gpio39<SubscribedInput>| {
-        if p.is_high().unwrap() {
-            led_counter.store(0, std::sync::atomic::Ordering::Relaxed);
+        if p.is_low().unwrap() {
+            info!("Button down");
+            led_heart.store(true, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            info!("Button up");
+            led_heart.store(false, std::sync::atomic::Ordering::Relaxed);
         }
     };
 

@@ -14,6 +14,17 @@ impl Glyph {
         self.0[y as usize] & 1 << x != 0
     }
 
+    pub fn mask_inv<I>(
+        self,
+        it: impl Iterator<Item = ((u8, u8), I)>,
+    ) -> impl Iterator<Item = ((u8, u8), Option<I>)> {
+        it.map(move |((x, y), v)| {
+            let r = if self.bit_set_at(x, y) { None } else { Some(v) };
+
+            ((x, y), r)
+        })
+    }
+
     pub fn mask_with_x_offset<I>(
         self,
         offset: i8,
@@ -25,14 +36,18 @@ impl Glyph {
                 _ => return ((x, y), Some(v)),
             };
 
-            let r = if self.bit_set_at(offset_x, y) { Some(v) } else { None };
+            let r = if self.bit_set_at(offset_x, y) {
+                Some(v)
+            } else {
+                None
+            };
 
             ((x, y), r)
         })
     }
 }
 
-static FONT: &[Glyph] = &[
+pub static FONT: &[Glyph] = &[
     Glyph::new(0, 0, 0, 0, 0),
     Glyph::new(10, 0, 4, 17, 14),
     Glyph::new(10, 0, 0, 14, 17),
@@ -361,14 +376,18 @@ impl ScrollingRender {
         //     .map(|(_, v)| v.unwrap_or(RGB8::new(0, 0, 0)))
     }
 
-    pub fn step(&mut self) {
+    pub fn step(&mut self) -> bool {
         self.char_offset += 1;
         if self.char_offset > 5 {
             self.char_offset = 0;
             self.scroll += 1;
         }
+
         if self.scroll as usize == self.message.len() {
-            self.scroll = 0
+            self.scroll = 0;
+            return true;
         }
+
+        return false;
     }
 }

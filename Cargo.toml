@@ -23,7 +23,12 @@ esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc", branch = "next" }
 esp-idf-sys = { version = "0.31.6", features = ["binstart"] }
 heapless = { version = "0.7.16", features = ["cas"] }
 itertools = "0.10.3"
-postcard = { version = "1.0.2", default-features = false, features = ["alloc", "postcard-derive", "use-std"] }
+once_cell = "1.13.1"
+postcard = { version = "1.0.2", default-features = false, features = [
+  "alloc",
+  "postcard-derive",
+  "use-std",
+] }
 serde = { version = "1.0.143", features = ["derive"] }
 smart-leds = "0.3.0"
 smart-leds-trait = "0.2.1"

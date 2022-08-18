@@ -1,25 +1,45 @@
-use core::ffi::c_char;
+use core::ffi::{c_char, c_int};
+use std::cell::UnsafeCell;
 use std::ffi::{c_void, CStr};
 use std::ptr;
+use std::sync::Mutex;
 
 use esp_idf_hal::serial::Uart;
 use esp_idf_sys::{
-    ble_gatt_access_ctxt, ble_gatt_chr_def, ble_gatt_register_ctxt, ble_gatt_svc_def,
-    ble_gatts_add_svcs, ble_gatts_count_cfg, ble_hs_mbuf_to_flat, ble_uuid128_t, ble_uuid_cmp,
-    ble_uuid_t, ble_uuid_to_str, esp, esp_nofail, nimble_port_init, os_mbuf, os_mbuf_append, rand,
-    uart_config_t, uart_driver_install, uart_hw_flowcontrol_t_UART_HW_FLOWCTRL_RTS,
-    uart_param_config, uart_parity_t_UART_PARITY_DISABLE, uart_set_pin,
-    uart_stop_bits_t_UART_STOP_BITS_1, uart_word_length_t_UART_DATA_8_BITS, EspError,
-    QueueHandle_t, BLE_ATT_ERR_INSUFFICIENT_RES, BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN,
-    BLE_ATT_ERR_UNLIKELY, BLE_GATT_ACCESS_OP_READ_CHR, BLE_GATT_ACCESS_OP_WRITE_CHR,
-    BLE_GATT_CHR_F_READ, BLE_GATT_CHR_F_READ_ENC, BLE_GATT_CHR_F_WRITE, BLE_GATT_CHR_F_WRITE_ENC,
-    BLE_GATT_REGISTER_OP_CHR, BLE_GATT_REGISTER_OP_DSC, BLE_GATT_REGISTER_OP_SVC,
-    BLE_GATT_SVC_TYPE_PRIMARY, BLE_UUID_STR_LEN, BLE_UUID_TYPE_128, UART_PIN_NO_CHANGE,
+    ble_gap_adv_params, ble_gap_adv_set_fields, ble_gap_adv_start, ble_gap_conn_desc,
+    ble_gap_conn_find, ble_gap_event, ble_gatt_access_ctxt, ble_gatt_chr_def,
+    ble_gatt_register_ctxt, ble_gatt_svc_def, ble_gattc_notify_custom, ble_gatts_add_svcs,
+    ble_gatts_count_cfg, ble_hs_adv_fields, ble_hs_cfg, ble_hs_id_copy_addr, ble_hs_id_infer_auto,
+    ble_hs_mbuf_from_flat, ble_hs_mbuf_to_flat, ble_hs_util_ensure_addr, ble_store_util_status_rr,
+    ble_uuid128_t, ble_uuid16_t, ble_uuid_cmp, ble_uuid_t, ble_uuid_to_str, esp,
+    esp_nimble_hci_and_controller_init, esp_nofail, nimble_port_freertos_deinit,
+    nimble_port_freertos_init, nimble_port_init, nimble_port_run, os_mbuf, os_mbuf_append, rand,
+    strlen, uart_config_t, uart_driver_install, uart_event_t,
+    uart_hw_flowcontrol_t_UART_HW_FLOWCTRL_RTS, uart_param_config,
+    uart_parity_t_UART_PARITY_DISABLE, uart_set_pin, uart_stop_bits_t_UART_STOP_BITS_1,
+    uart_word_length_t_UART_DATA_8_BITS, xQueueReceive, EspError, QueueHandle_t, TickType_t,
+    BLE_ATT_ERR_INSUFFICIENT_RES, BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN, BLE_ATT_ERR_UNLIKELY,
+    BLE_GAP_CONN_MODE_UND, BLE_GAP_DISC_MODE_GEN, BLE_GAP_EVENT_ADV_COMPLETE,
+    BLE_GAP_EVENT_CONNECT, BLE_GAP_EVENT_CONN_UPDATE, BLE_GAP_EVENT_DISCONNECT,
+    BLE_GATT_ACCESS_OP_READ_CHR, BLE_GATT_ACCESS_OP_WRITE_CHR, BLE_GATT_CHR_F_INDICATE,
+    BLE_GATT_CHR_F_NOTIFY, BLE_GATT_CHR_F_READ, BLE_GATT_CHR_F_READ_ENC, BLE_GATT_CHR_F_WRITE,
+    BLE_GATT_CHR_F_WRITE_ENC, BLE_GATT_REGISTER_OP_CHR, BLE_GATT_REGISTER_OP_DSC,
+    BLE_GATT_REGISTER_OP_SVC, BLE_GATT_SVC_TYPE_PRIMARY, BLE_HS_ADV_F_BREDR_UNSUP,
+    BLE_HS_ADV_F_DISC_GEN, BLE_HS_ADV_TX_PWR_LVL_AUTO, BLE_UUID_STR_LEN, BLE_UUID_TYPE_128,
+    BLE_UUID_TYPE_16, CONFIG_BT_NIMBLE_MAX_CONNECTIONS, UART_PIN_NO_CHANGE,
 };
+use once_cell::sync::Lazy;
 use tracing::{debug, error, info};
+
+pub static CURRENT_MESSAGE: Lazy<Mutex<String>> =
+    Lazy::new(|| Mutex::new("Hello World".to_owned()));
 
 const BLE_UUID_TYPE_128_: ble_uuid_t = ble_uuid_t {
     type_: BLE_UUID_TYPE_128 as u8,
+};
+
+const BLE_UUID_TYPE_16_: ble_uuid_t = ble_uuid_t {
+    type_: BLE_UUID_TYPE_16 as u8,
 };
 
 static mut GATT_SVR_SVC_SEC_TEST_UUID: ble_uuid128_t = ble_uuid128_t {
@@ -80,6 +100,291 @@ static mut GATT_SECURITY_SERVICES: [esp_idf_sys::ble_gatt_svc_def; 2] = unsafe {
     ]
 };
 
+static mut BLE_SVC_ANS_UUID16: ble_uuid16_t = ble_uuid16_t {
+    u: BLE_UUID_TYPE_16_,
+    value: 0x1811,
+};
+
+static mut BLE_SVC_ANS_CHR_UUID16_SUP_NEW_ALERT_CAT: ble_uuid16_t = ble_uuid16_t {
+    u: BLE_UUID_TYPE_16_,
+    value: 0x2a47,
+};
+
+static mut BLE_SVC_SPP_UUID16: ble_uuid16_t = ble_uuid16_t {
+    u: BLE_UUID_TYPE_16_,
+    value: 0xABF0,
+};
+
+static mut BLE_SVC_SPP_CHR_UUID16: ble_uuid16_t = ble_uuid16_t {
+    u: BLE_UUID_TYPE_16_,
+    value: 0xABF1,
+};
+
+static mut BLE_SPP_SVC_GATT_READ_VAL_HANDLE: UnsafeCell<u16> = UnsafeCell::new(0);
+static mut BLE_SVC_GATT_READ_VAL_HANDLE: UnsafeCell<u16> = UnsafeCell::new(0);
+
+static mut GATT_SERVICES: [esp_idf_sys::ble_gatt_svc_def; 3] = unsafe {
+    [
+        ble_gatt_svc_def {
+            type_: BLE_GATT_SVC_TYPE_PRIMARY as u8,
+            uuid: &BLE_SVC_ANS_UUID16.u,
+            characteristics: &[
+                ble_gatt_chr_def {
+                    uuid: &BLE_SVC_ANS_CHR_UUID16_SUP_NEW_ALERT_CAT.u,
+                    access_cb: Some(ble_svc_gatt_handler),
+                    val_handle: BLE_SVC_GATT_READ_VAL_HANDLE.get_mut(),
+                    flags: (BLE_GATT_CHR_F_READ
+                        | BLE_GATT_CHR_F_WRITE
+                        | BLE_GATT_CHR_F_NOTIFY
+                        | BLE_GATT_CHR_F_INDICATE) as u16,
+                    arg: std::ptr::null_mut(),
+                    descriptors: std::ptr::null_mut(),
+                    min_key_size: 0,
+                },
+                const_zero::const_zero!(ble_gatt_chr_def),
+            ] as *const _,
+            includes: std::ptr::null_mut(),
+        },
+        ble_gatt_svc_def {
+            type_: BLE_GATT_SVC_TYPE_PRIMARY as u8,
+            uuid: &BLE_SVC_SPP_UUID16.u,
+            characteristics: &[
+                ble_gatt_chr_def {
+                    uuid: &BLE_SVC_SPP_CHR_UUID16.u,
+                    access_cb: Some(ble_svc_gatt_handler),
+                    val_handle: BLE_SPP_SVC_GATT_READ_VAL_HANDLE.get(),
+                    flags: (BLE_GATT_CHR_F_READ
+                        | BLE_GATT_CHR_F_WRITE
+                        | BLE_GATT_CHR_F_NOTIFY
+                        | BLE_GATT_CHR_F_INDICATE) as u16,
+                    arg: std::ptr::null_mut(),
+                    descriptors: std::ptr::null_mut(),
+                    min_key_size: 0,
+                },
+                const_zero::const_zero!(ble_gatt_chr_def),
+            ] as *const _,
+            includes: std::ptr::null_mut(),
+        },
+        const_zero::const_zero!(ble_gatt_svc_def),
+    ]
+};
+
+unsafe extern "C" fn ble_spp_server_on_reset(reason: c_int) {
+    info!(reason, "Resetting ble");
+}
+
+static mut OWN_ADDR_TYPE: u8 = 0;
+
+unsafe extern "C" fn ble_spp_server_on_sync() {
+    let rc = ble_hs_util_ensure_addr(0);
+    assert_eq!(rc, 0, "ble_hs_util_ensure_addr");
+
+    let rc = ble_hs_id_infer_auto(0, &mut OWN_ADDR_TYPE as *mut _);
+    if rc != 0 {
+        error!(rc, "Failed to determine address type");
+        return;
+    }
+
+    let mut addr_val = [0u8; 6];
+    let rc = ble_hs_id_copy_addr(OWN_ADDR_TYPE, &mut addr_val as *mut _, std::ptr::null_mut());
+
+    info!(device_address = ?addr_val, "Found device address");
+
+    ble_spp_server_advertise();
+}
+
+unsafe extern "C" fn ble_spp_server_host_task(param: *mut c_void) {
+    info!("BLE host task started");
+
+    nimble_port_run();
+    nimble_port_freertos_deinit();
+}
+
+unsafe extern "C" fn ble_svc_gatt_handler(
+    conn_handle: u16,
+    attr_handle: u16,
+    ctxt: *mut ble_gatt_access_ctxt,
+    arg: *mut c_void,
+) -> i32 {
+    let ctxt_ = *ctxt;
+    match ctxt_.op as u32 {
+        BLE_GATT_ACCESS_OP_READ_CHR => {
+            info!("Callback for read");
+        }
+        BLE_GATT_ACCESS_OP_WRITE_CHR => {
+            let len = (*ctxt_.om).om_len;
+
+            info!(
+                conn_handle,
+                attr_handle, len, "Data received in write event"
+            );
+
+            let mut buf = [0u8; 256];
+            let mut out_len = 0u16;
+            let rc = ble_hs_mbuf_to_flat(
+                ctxt_.om,
+                &mut buf as *mut u8 as *mut _,
+                std::mem::size_of::<[u8; 256]>() as u16,
+                &mut out_len as *mut _,
+            );
+            if rc != 0 {
+                error!("Couldn't fetch mbuf in write handler");
+                return 0;
+            }
+
+            let s = match std::str::from_utf8(&buf[..out_len as usize]) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!(?e, "Failed decoding string as utf8");
+                    return 0;
+                }
+            };
+
+            CURRENT_MESSAGE.lock().unwrap().replace_range(.., s);
+            info!(s, "Updated message");
+        }
+        _ => {}
+    }
+
+    0
+}
+
+static mut GATT_SVR_SVC_ALERT_UUID: ble_uuid16_t = ble_uuid16_t {
+    u: BLE_UUID_TYPE_16_,
+    value: 0x1811,
+};
+
+static mut GATT_SVR_CHR_SUP_NEW_ALERT_CAT_UUID: ble_uuid16_t = ble_uuid16_t {
+    u: BLE_UUID_TYPE_16_,
+    value: 0x2A47,
+};
+
+static mut GATT_SVR_CHR_NEW_ALERT: ble_uuid16_t = ble_uuid16_t {
+    u: BLE_UUID_TYPE_16_,
+    value: 0x2A46,
+};
+
+static mut GATT_SVR_CHR_SUP_UNR_ALERT_CAT_UUID: ble_uuid16_t = ble_uuid16_t {
+    u: BLE_UUID_TYPE_16_,
+    value: 0x2A48,
+};
+
+static mut GATT_SVR_CHR_UNR_ALERT_STAT_UUID: ble_uuid16_t = ble_uuid16_t {
+    u: BLE_UUID_TYPE_16_,
+    value: 0x2A45,
+};
+
+static mut GATT_SVR_CHR_ALERT_NOT_CTRL_PT: ble_uuid16_t = ble_uuid16_t {
+    u: BLE_UUID_TYPE_16_,
+    value: 0x2A44,
+};
+
+unsafe fn ble_spp_server_advertise() {
+    let mut adv_params = ble_gap_adv_params::default();
+    let mut fields = ble_hs_adv_fields::default();
+
+    fields.flags = (BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP) as u8;
+
+    fields.set_tx_pwr_lvl_is_present(1);
+    fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO as i8;
+
+    let name = ble_svc_gap_device_name();
+    fields.name = name as *const _;
+    fields.name_len = strlen(name) as u8;
+    fields.set_name_is_complete(1);
+
+    static UUIDS16: &[ble_uuid16_t] = &[unsafe { GATT_SVR_SVC_ALERT_UUID }];
+    fields.uuids16 = UUIDS16.as_ptr();
+    fields.num_uuids16 = 1;
+    fields.set_uuids16_is_complete(1);
+
+    let rc = ble_gap_adv_set_fields(&fields);
+    if rc != 0 {
+        error!(rc, "error setting advertisement data");
+        return;
+    }
+
+    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND as u8;
+    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN as u8;
+
+    const BLE_HS_FOREVER: i32 = 2147483647;
+    let rc = ble_gap_adv_start(
+        OWN_ADDR_TYPE,
+        std::ptr::null(),
+        BLE_HS_FOREVER,
+        &adv_params,
+        Some(ble_spp_server_gap_event),
+        std::ptr::null_mut(),
+    );
+    if rc != 0 {
+        error!(rc, "error enabling advertisement");
+        return;
+    }
+}
+
+unsafe extern "C" fn ble_spp_server_gap_event(event: *mut ble_gap_event, arg: *mut c_void) -> i32 {
+    let event_ = *event;
+    let mut desc = ble_gap_conn_desc::default();
+
+    match event_.type_ as u32 {
+        BLE_GAP_EVENT_CONNECT => {
+            let connect = event_.__bindgen_anon_1.connect;
+            info!(
+                status = connect.status,
+                "connection {}",
+                if connect.status == 0 {
+                    "established"
+                } else {
+                    "failed"
+                }
+            );
+
+            if connect.status == 0 {
+                let rc = ble_gap_conn_find(connect.conn_handle, &mut desc as *mut _);
+                assert_eq!(rc, 0, "ble_gap_conn_find");
+                info!(handle = connect.conn_handle, ?desc, "Conn desc");
+                CONNECTION_HANDLES[connect.conn_handle as usize] = connect.conn_handle;
+            }
+
+            if connect.status != 0 || CONFIG_BT_NIMBLE_MAX_CONNECTIONS > 1 {
+                ble_spp_server_advertise();
+            }
+        }
+
+        BLE_GAP_EVENT_DISCONNECT => {
+            let disconnect = event_.__bindgen_anon_1.disconnect;
+            info!(reason = disconnect.reason, "Disconnect");
+
+            ble_spp_server_advertise();
+        }
+
+        BLE_GAP_EVENT_CONN_UPDATE => {
+            let conn_update = event_.__bindgen_anon_1.conn_update;
+            info!(status = conn_update.status, "Connection update");
+            let rc = ble_gap_conn_find(conn_update.conn_handle, &mut desc as *mut _);
+            assert_eq!(rc, 0, "ble_gap_conn_find");
+            info!(?desc, "Conn desc");
+        }
+
+        BLE_GAP_EVENT_ADV_COMPLETE => {
+            let adv_complete = event_.__bindgen_anon_1.adv_complete;
+            info!(reason = adv_complete.reason, "advertise complete");
+            ble_spp_server_advertise();
+        }
+
+        BLE_GAP_EVENT_MTU => {
+            let mtu = event_.__bindgen_anon_1.mtu;
+            info!(
+                conn_handle = mtu.conn_handle,
+                channel_id = mtu.channel_id,
+                value = mtu.value,
+                "mtu update"
+            );
+        }
+    }
+
+    0
+}
 // sepples moment
 
 unsafe fn gatt_svr_chr_write(
@@ -159,7 +464,7 @@ unsafe extern "C" fn gatt_svr_chr_access_sec_test(
     0
 }
 
-unsafe extern "C" fn gatt_server_register_cb(ctxt: *mut ble_gatt_register_ctxt, arg: *mut c_void) {
+unsafe extern "C" fn gatt_svr_register_cb(ctxt: *mut ble_gatt_register_ctxt, arg: *mut c_void) {
     let mut buf = [0 as c_char; BLE_UUID_STR_LEN as usize];
     let ctxt_ = *ctxt;
 
@@ -184,8 +489,67 @@ unsafe extern "C" fn gatt_server_register_cb(ctxt: *mut ble_gatt_register_ctxt, 
 }
 
 static mut SPP_COMMON_QUEUE_HANDLE: QueueHandle_t = std::ptr::null_mut();
+static mut CONNECTION_HANDLES: [u16; CONFIG_BT_NIMBLE_MAX_CONNECTIONS as usize] =
+    [0; CONFIG_BT_NIMBLE_MAX_CONNECTIONS as usize];
 
-unsafe fn ble_uart_init<U: Uart>(_uart: U) -> color_eyre::Result<()> {
+fn ble_uart_task<U: Uart>(_uart: U) {
+    info!("Starting ble uart task");
+
+    let mut event: uart_event_t = uart_event_t::default();
+
+    loop {
+        if unsafe {
+            xQueueReceive(
+                SPP_COMMON_QUEUE_HANDLE,
+                &mut event as *mut uart_event_t as *mut _,
+                TickType_t::MAX,
+            )
+        } == 1
+        {
+            match event.type_ {
+                esp_idf_sys::uart_event_type_t_UART_DATA => {
+                    if event.size > 0 {
+                        static mut NTF: [u8; 1] = [0];
+                        unsafe {
+                            NTF[0] = 90;
+                        }
+
+                        for i in 0..(CONFIG_BT_NIMBLE_MAX_CONNECTIONS as usize) {
+                            let handle = unsafe { CONNECTION_HANDLES[i] };
+                            if handle == 0 {
+                                continue;
+                            }
+
+                            let txom: *mut os_mbuf = unsafe {
+                                ble_hs_mbuf_from_flat(
+                                    &NTF as *const u8 as *const _,
+                                    std::mem::size_of::<[u8; 1]>() as u16,
+                                )
+                            };
+
+                            let rc = unsafe {
+                                ble_gattc_notify_custom(
+                                    handle,
+                                    *BLE_SPP_SVC_GATT_READ_VAL_HANDLE.get_mut(),
+                                    txom,
+                                )
+                            };
+
+                            if rc == 0 {
+                                info!("Notification sent");
+                            } else {
+                                error!(rc, "Erorr sending notif");
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+unsafe fn ble_uart_init<U: Uart + Send + 'static>(uart: U) -> color_eyre::Result<()> {
     let uart_config = uart_config_t {
         baud_rate: 115200,
         data_bits: uart_word_length_t_UART_DATA_8_BITS,
@@ -214,12 +578,12 @@ unsafe fn ble_uart_init<U: Uart>(_uart: U) -> color_eyre::Result<()> {
         0
     ))?;
 
-    // TODO: https://github.com/espressif/esp-idf/blob/master/examples/bluetooth/nimble/ble_spp/spp_server/main/main.c#L383
+    std::thread::spawn(move || ble_uart_task(uart));
 
     Ok(())
 }
 
-pub fn init_ble(uart: impl Uart) -> color_eyre::Result<()> {
+pub fn init_ble<U: Uart + Send + 'static>(uart: U) -> color_eyre::Result<()> {
     unsafe {
         if let Err(err) = esp!(esp_idf_sys::nvs_flash_init()) {
             if err.code() == esp_idf_sys::ESP_ERR_NVS_NO_FREE_PAGES
@@ -230,14 +594,36 @@ pub fn init_ble(uart: impl Uart) -> color_eyre::Result<()> {
             }
         }
 
+        info!("Initializing bluetooth");
+
+        esp!(esp_nimble_hci_and_controller_init())?;
+
         nimble_port_init();
 
-        ble_uart_init(uart);
+        ble_uart_init(uart)?;
 
+        ble_hs_cfg.reset_cb = Some(ble_spp_server_on_reset);
+        ble_hs_cfg.sync_cb = Some(ble_spp_server_on_sync);
+        ble_hs_cfg.gatts_register_cb = Some(gatt_svr_register_cb);
+        ble_hs_cfg.store_status_cb = Some(ble_store_util_status_rr);
+        ble_hs_cfg.sm_io_cap = 3;
+        ble_hs_cfg.set_sm_bonding(1);
+        ble_hs_cfg.set_sm_sc(1);
+        ble_hs_cfg.sm_our_key_dist = 1;
+        ble_hs_cfg.sm_their_key_dist = 1;
+
+        // gatt_svr_init
         ble_svc_gap_init();
         ble_svc_gatt_init();
         esp!(ble_gatts_count_cfg(&GATT_SECURITY_SERVICES as *const _))?;
         esp!(ble_gatts_add_svcs(&GATT_SECURITY_SERVICES as *const _))?;
+        esp!(ble_gatts_count_cfg(&GATT_SERVICES as *const _))?;
+        esp!(ble_gatts_add_svcs(&GATT_SERVICES as *const _))?;
+        esp!(ble_svc_gap_device_name_set(
+            b"D21 Scrolling Text\0" as *const u8 as *const _
+        ))?;
+        ble_store_config_init();
+        nimble_port_freertos_init(Some(ble_spp_server_host_task));
     }
 
     Ok(())
@@ -246,404 +632,7 @@ pub fn init_ble(uart: impl Uart) -> color_eyre::Result<()> {
 extern "C" {
     fn ble_svc_gap_init();
     fn ble_svc_gatt_init();
+    fn ble_svc_gap_device_name() -> *const c_char;
+    fn ble_svc_gap_device_name_set(name: *const c_char) -> c_int;
+    fn ble_store_config_init();
 }
-
-// pub fn init_ble() -> color_eyre::Result<()> {
-//     let mut config = esp_idf_sys::esp_bt_controller_config_t {
-//         controller_task_stack_size: esp_idf_sys::ESP_TASK_BT_CONTROLLER_STACK as u16,
-//         controller_task_prio: esp_idf_sys::ESP_TASK_BT_CONTROLLER_PRIO as u8,
-//         hci_uart_no: esp_idf_sys::BT_HCI_UART_NO_DEFAULT as u8,
-//         hci_uart_baudrate: esp_idf_sys::BT_HCI_UART_BAUDRATE_DEFAULT,
-//         scan_duplicate_mode: esp_idf_sys::SCAN_DUPLICATE_MODE as u8,
-//         scan_duplicate_type: esp_idf_sys::SCAN_DUPLICATE_TYPE_VALUE as u8,
-//         normal_adv_size: esp_idf_sys::NORMAL_SCAN_DUPLICATE_CACHE_SIZE as u16,
-//         mesh_adv_size: esp_idf_sys::MESH_DUPLICATE_SCAN_CACHE_SIZE as u16,
-//         send_adv_reserved_size: esp_idf_sys::SCAN_SEND_ADV_RESERVED_SIZE as u16,
-//         controller_debug_flag: esp_idf_sys::CONTROLLER_ADV_LOST_DEBUG_BIT,
-//         mode: esp_idf_sys::esp_bt_mode_t_ESP_BT_MODE_BLE as u8,
-//         ble_max_conn: esp_idf_sys::CONFIG_BTDM_CTRL_BLE_MAX_CONN_EFF as u8,
-//         bt_max_acl_conn: esp_idf_sys::CONFIG_BTDM_CTRL_BR_EDR_MAX_ACL_CONN_EFF as u8,
-//         bt_sco_datapath: esp_idf_sys::CONFIG_BTDM_CTRL_BR_EDR_SCO_DATA_PATH_EFF as u8,
-//         auto_latency: esp_idf_sys::BTDM_CTRL_AUTO_LATENCY_EFF != 0,
-//         bt_legacy_auth_vs_evt: esp_idf_sys::BTDM_CTRL_LEGACY_AUTH_VENDOR_EVT_EFF != 0,
-//         bt_max_sync_conn: esp_idf_sys::CONFIG_BTDM_CTRL_BR_EDR_MAX_SYNC_CONN_EFF as u8,
-//         ble_sca: esp_idf_sys::CONFIG_BTDM_BLE_SLEEP_CLOCK_ACCURACY_INDEX_EFF as u8,
-//         pcm_role: esp_idf_sys::CONFIG_BTDM_CTRL_PCM_ROLE_EFF as u8,
-//         pcm_polar: esp_idf_sys::CONFIG_BTDM_CTRL_PCM_POLAR_EFF as u8,
-//         hli: esp_idf_sys::BTDM_CTRL_HLI != 0,
-//         magic: esp_idf_sys::ESP_BT_CONTROLLER_CONFIG_MAGIC_VAL,
-//     };
-
-//     unsafe {
-//         if let Err(err) = esp!(esp_idf_sys::nvs_flash_init()) {
-//             if err.code() == esp_idf_sys::ESP_ERR_NVS_NO_FREE_PAGES
-//                 || err.code() == esp_idf_sys::ESP_ERR_NVS_NEW_VERSION_FOUND
-//             {
-//                 esp!(esp_idf_sys::nvs_flash_erase())?;
-//                 esp!(esp_idf_sys::nvs_flash_init())?;
-//             }
-//         }
-
-//         esp!(esp_idf_sys::esp_bt_controller_mem_release(
-//             esp_idf_sys::esp_bt_mode_t_ESP_BT_MODE_CLASSIC_BT
-//         ))?;
-//         esp!(esp_idf_sys::esp_bt_controller_init(&mut config))?;
-//         esp!(esp_idf_sys::esp_bt_controller_enable(
-//             esp_idf_sys::esp_bt_mode_t_ESP_BT_MODE_BLE
-//         ))?;
-//         esp!(esp_idf_sys::esp_bluedroid_init())?;
-//         esp!(esp_idf_sys::esp_bluedroid_enable())?;
-//         esp!(esp_idf_sys::esp_ble_gatts_register_callback(Some(
-//             ble_gatts_callback
-//         )))?;
-//         esp!(esp_idf_sys::esp_ble_gap_register_callback(Some(
-//             ble_gap_callback
-//         )))?;
-//         esp!(esp_idf_sys::esp_ble_gatts_app_register(APP_ID))?;
-//         esp!(esp_idf_sys::esp_ble_gatt_set_local_mtu(512))?;
-//     }
-//     // esp!()
-//     //
-//     Ok(())
-// }
-
-// struct GattsProfile {
-//     if_: esp_idf_sys::esp_gatt_if_t,
-//     service_id: esp_idf_sys::esp_gatt_srvc_id_t,
-//     service_handle: u16,
-//     char_uuid: esp_idf_sys::esp_bt_uuid_t,
-//     char_handle: u16,
-//     descr_uuid: esp_idf_sys::esp_bt_uuid_t,
-//     descr_handle: u16,
-//     conn_id: u16,
-// }
-
-// static mut GL_PROFILE: GattsProfile = GattsProfile {
-//     if_: 0,
-//     service_id: esp_idf_sys::esp_gatt_srvc_id_t {
-//         id: esp_idf_sys::esp_gatt_id_t {
-//             uuid: esp_idf_sys::esp_bt_uuid_t {
-//                 len: 0,
-//                 uuid: esp_idf_sys::esp_bt_uuid_t__bindgen_ty_1 { uuid128: [0; 16] },
-//             },
-//             inst_id: 0,
-//         },
-//         is_primary: false,
-//     },
-//     service_handle: 0,
-//     char_uuid: esp_idf_sys::esp_bt_uuid_t {
-//         len: 0,
-//         uuid: esp_idf_sys::esp_bt_uuid_t__bindgen_ty_1 { uuid128: [0; 16] },
-//     },
-//     char_handle: 0,
-//     descr_uuid: esp_idf_sys::esp_bt_uuid_t {
-//         len: 0,
-//         uuid: esp_idf_sys::esp_bt_uuid_t__bindgen_ty_1 { uuid128: [0; 16] },
-//     },
-//     descr_handle: 0,
-//     conn_id: 0,
-// };
-
-// unsafe extern "C" fn ble_gatts_callback(
-//     event: esp_idf_sys::esp_gatts_cb_event_t,
-//     gatts_if: esp_idf_sys::esp_gatt_if_t,
-//     param: *mut esp_idf_sys::esp_ble_gatts_cb_param_t,
-// ) {
-//     let param_ = *param;
-
-//     match event {
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_REG_EVT => {
-//             if param_.reg.status == esp_idf_sys::esp_gatt_status_t_ESP_GATT_OK {
-//                 GL_PROFILE.if_ = gatts_if;
-//             } else {
-//                 error!(status = ?param_.reg, "Reg app failed");
-//                 return;
-//             }
-//         }
-//         _ => {}
-//     }
-
-//     if (gatts_if as u32) == esp_idf_sys::ESP_GATT_IF_NONE || gatts_if == GL_PROFILE.if_ {
-//         gatt_profile_callback(event, gatts_if, param);
-//     }
-// }
-
-// static DEVICE_NAME: &[u8] = b"D21 Door Thingie\0";
-
-// static mut ADV_CONFIG_DONE: u8 = 0;
-// const ADV_CONFIG_FLAG: u8 = 1 << 0;
-// const SCAN_RSP_CONFIG_FLAG: u8 = 1 << 1;
-
-// static ADV_SERVICE_UUID: [u8; 32] = [0x69; 32];
-// const GATTS_NUM_HANDLES: u16 = 4;
-
-// static mut ADV_DATA: esp_idf_sys::esp_ble_adv_data_t = esp_idf_sys::esp_ble_adv_data_t {
-//     set_scan_rsp: false,
-//     include_name: true,
-//     include_txpower: false,
-//     min_interval: 0x0006,
-//     max_interval: 0x0010,
-//     appearance: 0x00,
-//     manufacturer_len: 0,
-//     p_manufacturer_data: ptr::null_mut(),
-//     service_data_len: 0,
-//     p_service_data: ptr::null_mut(),
-//     service_uuid_len: std::mem::size_of::<[u8; 32]>() as u16,
-//     p_service_uuid: &ADV_SERVICE_UUID as *const _ as *mut _,
-//     flag: (esp_idf_sys::ESP_BLE_ADV_FLAG_GEN_DISC | esp_idf_sys::ESP_BLE_ADV_FLAG_BREDR_NOT_SPT)
-//         as u8,
-// };
-
-// static mut SCAN_RSP_DATA: esp_idf_sys::esp_ble_adv_data_t = esp_idf_sys::esp_ble_adv_data_t {
-//     set_scan_rsp: true,
-//     include_name: true,
-//     include_txpower: true,
-//     min_interval: 0x0,
-//     max_interval: 0x0,
-//     appearance: 0x00,
-//     manufacturer_len: 0,
-//     p_manufacturer_data: ptr::null_mut(),
-//     service_data_len: 0,
-//     p_service_data: ptr::null_mut(),
-//     service_uuid_len: std::mem::size_of::<[u8; 32]>() as u16,
-//     p_service_uuid: &ADV_SERVICE_UUID as *const _ as *mut _,
-//     flag: (esp_idf_sys::ESP_BLE_ADV_FLAG_GEN_DISC | esp_idf_sys::ESP_BLE_ADV_FLAG_BREDR_NOT_SPT)
-//         as u8,
-// };
-
-// static mut GATT_PROPERTY: esp_idf_sys::esp_gatt_char_prop_t = 0;
-
-// const GATTS_DEMO_CHAR_VAL_LEN_MAX: u16 = 0x40;
-// static mut CHAR1_STR: [u8; 3] = [0x11, 0x22, 0x33];
-
-// static mut GATTS_CHAR1_VAL: esp_idf_sys::esp_attr_value_t = esp_idf_sys::esp_attr_value_t {
-//     attr_max_len: GATTS_DEMO_CHAR_VAL_LEN_MAX,
-//     attr_len: std::mem::size_of::<[u8; 3]>() as u16,
-//     attr_value: unsafe { &mut CHAR1_STR as *const _ as *mut _ },
-// };
-
-// unsafe fn gatt_profile_callback(
-//     event: esp_idf_sys::esp_gatts_cb_event_t,
-//     gatts_if: esp_idf_sys::esp_gatt_if_t,
-//     param: *mut esp_idf_sys::esp_ble_gatts_cb_param_t,
-// ) {
-//     let param_ = *param;
-
-//     match event {
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_REG_EVT => {
-//             GL_PROFILE.service_id.is_primary = true;
-//             GL_PROFILE.service_id.id.inst_id = 0x00;
-//             GL_PROFILE.service_id.id.uuid.len = esp_idf_sys::ESP_UUID_LEN_16 as u16;
-//             GL_PROFILE.service_id.id.uuid.uuid.uuid16 = 0x6969;
-
-//             if let Err(err) = esp!(esp_idf_sys::esp_ble_gap_set_device_name(
-//                 DEVICE_NAME.as_ptr() as *const i8
-//             )) {
-//                 error!(?err, "Error setting device name");
-//                 return;
-//             }
-
-//             if let Err(err) = esp!(esp_idf_sys::esp_ble_gap_config_adv_data(&mut ADV_DATA)) {
-//                 error!(?err, "Error setting gap adv config");
-//                 return;
-//             }
-
-//             ADV_CONFIG_DONE |= ADV_CONFIG_FLAG;
-
-//             if let Err(err) = esp!(esp_idf_sys::esp_ble_gap_config_adv_data(&mut SCAN_RSP_DATA)) {
-//                 error!(?err, "Error setting gap scan rsp config");
-//                 return;
-//             }
-
-//             ADV_CONFIG_DONE |= SCAN_RSP_CONFIG_FLAG;
-
-//             esp_idf_sys::esp_ble_gatts_create_service(
-//                 gatts_if,
-//                 &mut GL_PROFILE.service_id,
-//                 GATTS_NUM_HANDLES,
-//             );
-//         }
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_READ_EVT => {
-//             info!(read = ?param_.read, "BLE GATTS read_evt");
-//             let mut rsp = esp_idf_sys::esp_gatt_rsp_t::default();
-//             rsp.attr_value.handle = param_.read.handle;
-//             rsp.attr_value.len = 4;
-//             rsp.attr_value.value[0] = 0x69;
-//             rsp.attr_value.value[1] = 0x69;
-//             rsp.attr_value.value[2] = 0x69;
-//             rsp.attr_value.value[3] = 0x69;
-
-//             esp_idf_sys::esp_ble_gatts_send_response(
-//                 gatts_if,
-//                 param_.read.conn_id,
-//                 param_.read.trans_id,
-//                 esp_gatt_status_t_ESP_GATT_OK,
-//                 &mut rsp,
-//             );
-//         }
-//         // esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_REG_EVT => {}
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_MTU_EVT => {
-//             info!("Setting MTU to {}", param_.mtu.mtu);
-//         }
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_UNREG_EVT => {}
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_CREATE_EVT => {
-//             info!(status = ?param_.create.status,
-//                   service_handle = ?param_.create.service_handle,
-//                   "Creating GATTS service");
-//             GL_PROFILE.service_handle = param_.create.service_handle;
-//             GL_PROFILE.char_uuid.len = esp_idf_sys::ESP_UUID_LEN_16 as u16;
-//             GL_PROFILE.char_uuid.uuid.uuid16 = 0x0420;
-
-//             if let Err(err) = esp!(esp_idf_sys::esp_ble_gatts_start_service(
-//                 GL_PROFILE.service_handle
-//             )) {
-//                 error!(?err, "Error starting GATTS service");
-//                 return;
-//             }
-
-//             GATT_PROPERTY = (esp_idf_sys::ESP_GATT_CHAR_PROP_BIT_READ
-//                 | esp_idf_sys::ESP_GATT_CHAR_PROP_BIT_WRITE
-//                 | esp_idf_sys::ESP_GATT_CHAR_PROP_BIT_NOTIFY) as u8;
-
-//             if let Err(err) = esp!(esp_idf_sys::esp_ble_gatts_add_char(
-//                 GL_PROFILE.service_handle,
-//                 &mut GL_PROFILE.char_uuid,
-//                 (ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE) as u16,
-//                 GATT_PROPERTY,
-//                 &mut GATTS_CHAR1_VAL,
-//                 std::ptr::null_mut()
-//             )) {
-//                 error!(?err, "Error adding char to GATTS");
-//                 return;
-//             }
-//         }
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_ADD_INCL_SRVC_EVT => {}
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_ADD_CHAR_EVT => {
-//             info!(status = ?param_.add_char.status,
-//                   attr_handle = ?param_.add_char.attr_handle,
-//                   service_handle = ?param_.add_char.service_handle,
-//                   "Adding char to service");
-//             GL_PROFILE.char_handle = param_.add_char.attr_handle;
-//             GL_PROFILE.descr_uuid.len = esp_idf_sys::ESP_UUID_LEN_16 as u16;
-//             GL_PROFILE.descr_uuid.uuid.uuid16 = 0x4200;
-
-//             let mut length: u16 = 0;
-//             let mut prf_char: *const u8 = std::ptr::null();
-
-//             if let Err(err) = esp!(esp_idf_sys::esp_ble_gatts_get_attr_value(
-//                 param_.add_char.attr_handle,
-//                 &mut length,
-//                 &mut prf_char
-//             )) {
-//                 error!(?err, "Error getting attribute value");
-//             }
-
-//             info!(length, "GATTS Char length");
-//             let s = std::slice::from_raw_parts(prf_char, length as usize);
-//             info!("GATTS Char = {:?}", s);
-
-//             if let Err(err) = esp!(esp_idf_sys::esp_ble_gatts_add_char_descr(
-//                 GL_PROFILE.service_handle,
-//                 &mut GL_PROFILE.descr_uuid,
-//                 (ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE) as u16,
-//                 std::ptr::null_mut(),
-//                 std::ptr::null_mut()
-//             )) {
-//                 error!(?err, "Error adding char descr to GATTS");
-//                 return;
-//             }
-//         }
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_ADD_CHAR_DESCR_EVT => {
-//             GL_PROFILE.descr_handle = param_.add_char_descr.attr_handle;
-//             info!(status = ?param_.add_char_descr.status,
-//                   attr_handle = ?param_.add_char_descr.attr_handle,
-//                   service_handle = ?param_.add_char_descr.service_handle,
-//                   "Added char descr");
-//         }
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_DELETE_EVT => {}
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_START_EVT => {
-//             info!(status = ?param_.start.status,
-//                   service_handle = ?param_.start.service_handle,
-//                   "Started GATTS");
-//         }
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_STOP_EVT => {}
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_CONNECT_EVT => {
-//             let mut conn_params = esp_idf_sys::esp_ble_conn_update_params_t::default();
-//             conn_params.bda = param_.connect.remote_bda;
-//             conn_params.latency = 0;
-//             conn_params.max_int = 0x20;
-//             conn_params.min_int = 0x10;
-//             conn_params.timeout = 400;
-//             info!(connect = ?param_.connect, "Got GATT Connection");
-//             GL_PROFILE.conn_id = param_.connect.conn_id;
-//             esp_idf_sys::esp_ble_gap_update_conn_params(&mut conn_params);
-//         }
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_DISCONNECT_EVT => {
-//             info!(disconnect = ?param_.disconnect, "GATTS Disconnect");
-//             esp_idf_sys::esp_ble_gap_start_advertising(&mut ADV_PARAMS);
-//         }
-//         esp_idf_sys::esp_gatts_cb_event_t_ESP_GATTS_CONF_EVT => {
-//             info!(conf = ?param_.conf, "ESP Conf event");
-//         }
-//         _ => {
-//             info!("Received unhandled GATT event: {}", event)
-//         }
-//     }
-// }
-
-// static mut ADV_PARAMS: esp_idf_sys::esp_ble_adv_params_t = esp_idf_sys::esp_ble_adv_params_t {
-//     adv_int_min: 0x20,
-//     adv_int_max: 0x40,
-//     adv_type: esp_idf_sys::esp_ble_adv_type_t_ADV_TYPE_IND,
-//     own_addr_type: esp_idf_sys::esp_ble_addr_type_t_BLE_ADDR_TYPE_PUBLIC,
-//     peer_addr: [0; 6],
-//     peer_addr_type: 0,
-//     channel_map: esp_idf_sys::esp_ble_adv_channel_t_ADV_CHNL_ALL,
-//     adv_filter_policy: esp_idf_sys::esp_ble_adv_filter_t_ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
-// };
-
-// unsafe extern "C" fn ble_gap_callback(
-//     event: esp_idf_sys::esp_gap_ble_cb_event_t,
-//     param: *mut esp_idf_sys::esp_ble_gap_cb_param_t,
-// ) {
-//     let param = *param;
-
-//     match event {
-//         esp_idf_sys::esp_gap_ble_cb_event_t_ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT => {
-//             ADV_CONFIG_DONE &= !ADV_CONFIG_FLAG;
-//             if ADV_CONFIG_DONE == 0 {
-//                 if let Err(e) = esp!(esp_idf_sys::esp_ble_gap_start_advertising(&mut ADV_PARAMS)) {
-//                     error!("BLE Advertising start err: {:?}", e);
-//                     return;
-//                 }
-//             }
-//         }
-//         esp_idf_sys::esp_gap_ble_cb_event_t_ESP_GAP_BLE_SCAN_RSP_DATA_SET_COMPLETE_EVT => {
-//             ADV_CONFIG_DONE &= !SCAN_RSP_CONFIG_FLAG;
-//             if ADV_CONFIG_DONE == 0 {
-//                 if let Err(e) = esp!(esp_idf_sys::esp_ble_gap_start_advertising(&mut ADV_PARAMS)) {
-//                     error!("BLE Advertising start err: {:?}", e);
-//                     return;
-//                 }
-//             }
-//         }
-//         esp_idf_sys::esp_gap_ble_cb_event_t_ESP_GAP_BLE_ADV_START_COMPLETE_EVT => {
-//             if param.adv_start_cmpl.status != esp_idf_sys::esp_bt_status_t_ESP_BT_STATUS_SUCCESS {
-//                 error!("BLE advertising start failed");
-//                 return;
-//             }
-//         }
-//         esp_idf_sys::esp_gap_ble_cb_event_t_ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT => {
-//             if param.adv_stop_cmpl.status != esp_idf_sys::esp_bt_status_t_ESP_BT_STATUS_SUCCESS {
-//                 error!("BLE advertising stop failed");
-//                 return;
-//             } else {
-//                 info!("BLE advertising stop succeeded");
-//             }
-//         }
-//         esp_idf_sys::esp_gap_ble_cb_event_t_ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT => {
-//             info!(status = ?param.update_conn_params, "BLE connection status update");
-//         }
-//         _ => info!("Received unhandled GAP event: {}", event),
-//     }
-// }

@@ -1,4 +1,4 @@
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,9 +6,11 @@ use embassy_util::Forever;
 use esp_idf_hal::gpio::OutputPin;
 use esp_idf_hal::rmt::HwChannel;
 use smart_leds::{SmartLedsWrite, RGB8};
+use tracing::{error, info};
 
+use crate::bluetooth::CURRENT_MESSAGE;
 use crate::dither::GammaDither;
-use crate::font::ScrollingRender;
+use crate::font::{self, ScrollingRender};
 use crate::leds;
 
 fn rgb(x: u8, y: u8, offs: u8) -> RGB8 {
@@ -26,7 +28,7 @@ fn rgb(x: u8, y: u8, offs: u8) -> RGB8 {
 }
 
 pub fn led_task(
-    counter: Arc<AtomicU8>,
+    heart: Arc<AtomicBool>,
     pin: impl OutputPin,
     rmt: impl HwChannel,
 ) -> color_eyre::Result<()> {
@@ -35,20 +37,42 @@ pub fn led_task(
     let mut leds = leds::Esp32Neopixel::<_, _, 25>::new(pin, rmt, mem)?;
 
     const STEPS: usize = 4;
+    let mut i = 0u8;
 
     let mut message = ScrollingRender::from_str("hello world")?;
 
     loop {
-        for _ in 0..8 {
-            let i = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        for _ in 0..12 {
             for step in 0..STEPS {
-                let it = message.render(|x, y| rgb(x, y, i as u8));
+                if heart.load(std::sync::atomic::Ordering::Relaxed) {
+                    let it = font::FONT[0x3]
+                        .mask_with_x_offset(
+                            0,
+                            leds::with_positions(|_x, _y| RGB8::new(0xFD, 0x3F, 0x92)),
+                        )
+                        .map(|(_, v)| v.unwrap_or(RGB8::new(0, 0, 0)));
 
-                let _ = leds.write(GammaDither::<STEPS, 15>::dither(step, it));
+                    let _ = leds.write(GammaDither::<STEPS, 15>::dither(step, it));
+                } else {
+                    let it = message.render(|x, y| rgb(x, y, i as u8));
+
+                    let _ = leds.write(GammaDither::<STEPS, 15>::dither(step, it));
+                }
 
                 std::thread::sleep(Duration::from_micros(100));
             }
+            i += 1;
         }
-        message.step();
+        if message.step() {
+            info!("message done! seeing if there's a new one");
+            match ScrollingRender::from_str(CURRENT_MESSAGE.lock().unwrap().as_str()) {
+                Ok(m) => {
+                    message = m;
+                }
+                Err(err) => {
+                    error!(?err, "Failed to update message");
+                }
+            }
+        }
     }
 }

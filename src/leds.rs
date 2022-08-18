@@ -54,7 +54,7 @@ fn ns(x: u64) -> Duration {
 }
 
 fn into_bits(colour: RGB8) -> impl Iterator<Item = bool> {
-    bitvec::array::BitArray::<[u8; 3], Msb0>::new([colour.r, colour.g, colour.b]).into_iter()
+    bitvec::array::BitArray::<[u8; 3], Msb0>::new([colour.g, colour.r, colour.b]).into_iter()
 }
 
 pub static PATTERN: &[(u8, u8)] = &[
