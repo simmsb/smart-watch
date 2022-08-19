@@ -1,14 +1,23 @@
+use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
 use esp_idf_hal::gpio::{Gpio21, Gpio22, InputOutput};
 use esp_idf_hal::i2c::{I2cError, Master, I2C0};
 
 #[derive(Clone)]
-pub struct I2c0(Arc<Mutex<Master<I2C0, Gpio21<InputOutput>, Gpio22<InputOutput>>>>);
+pub struct I2c0(pub Arc<Mutex<Master<I2C0, Gpio21<InputOutput>, Gpio22<InputOutput>>>>);
 
 impl I2c0 {
     pub fn new(inner: Master<I2C0, Gpio21<InputOutput>, Gpio22<InputOutput>>) -> Self {
         Self(Arc::new(Mutex::new(inner)))
+    }
+}
+
+impl Deref for I2c0 {
+    type Target = Mutex<Master<I2C0, Gpio21<InputOutput>, Gpio22<InputOutput>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 

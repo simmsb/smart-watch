@@ -7,7 +7,7 @@ pub struct EspRtc {
 }
 
 impl EspRtc {
-    pub fn new(i2c: I2c0) -> color_eyre::eyre::Result<Self> {
+    pub fn new(i2c: I2c0) -> color_eyre::Result<Self> {
         let mut rtc = pcf8563::PCF8563::new(i2c);
         rtc.rtc_init()
             .map_err(|e| color_eyre::eyre::eyre!("Failed to reset RTC: {:?}", e))?;
