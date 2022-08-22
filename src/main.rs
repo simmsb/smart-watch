@@ -17,7 +17,7 @@ use embedded_hal::digital::blocking::InputPin;
 use eos::{DateTime, Timestamp, Utc};
 use esp_idf_hal::gpio::{Gpio37, Gpio39, SubscribedInput};
 use esp_idf_hal::{i2c, prelude::*};
-use esp_idf_sys as _;
+use esp_idf_sys::{self as _, esp};
 use once_cell::sync::Lazy;
 use tracing::{error, info};
 
@@ -90,6 +90,14 @@ fn main() -> Result<()> {
     // color_eyre::install()?;
 
     println!("Hello, world!");
+
+    let pm_config = esp_idf_sys::esp_pm_config_esp32_t {
+        max_freq_mhz: 80,
+        min_freq_mhz: 40,
+        light_sleep_enable: true,
+    };
+
+    esp!(unsafe { esp_idf_sys::esp_pm_configure(&pm_config as *const _ as *const _) })?;
 
     let peripherals = Peripherals::take().ok_or_else(|| eyre!("Peripherals were already taken"))?;
 

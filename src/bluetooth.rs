@@ -229,6 +229,7 @@ unsafe fn ble_spp_server_advertise() {
         name_len: strlen(name) as u8,
         uuids16: UUIDS16.as_ptr(),
         num_uuids16: UUIDS16.len() as u8,
+        adv_itvl: 8000,
         // uuids128: UUIDS128.as_ptr(),
         // num_uuids128: UUIDS128.len() as u8,
         ..Default::default()
@@ -237,6 +238,7 @@ unsafe fn ble_spp_server_advertise() {
     fields.set_tx_pwr_lvl_is_present(1);
     fields.set_name_is_complete(1);
     fields.set_uuids16_is_complete(1);
+    fields.set_adv_itvl_is_present(1);
 
     let rc = ble_gap_adv_set_fields(&fields);
     if rc != 0 {
