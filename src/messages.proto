@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+package messages.items;
+
+message SyncClock {
+    google.protobuf.Timestamp timestamp = 1;
+}
+
+message PushNotification {
+    string body = 1;
+}
+
+message Message {
+    uint32 origin = 1;
+    oneof body {
+        SyncClock sync_clock = 2;
+        PushNotification push_notification = 3;
+    }
+}

@@ -9,6 +9,7 @@ resolver = "2"
 [dependencies]
 bitvec = "1.0.1"
 bus = "2.3.0"
+bytes = "1.2.1"
 color-eyre = "0.6.2"
 const-zero = "0.1.0"
 display-interface = "0.4.1"
@@ -19,10 +20,19 @@ embedded-graphics = "0.7.1"
 embedded-hal = "1.0.0-alpha.8"
 embedded-svc = { git = "https://github.com/esp-rs/embedded-svc", branch = "next" }
 embedded-text = "0.5.0"
-eos = { git = "https://github.com/rapptz/eos", version = "0.1.0", default-features = false, features = ["alloc", "formatting", "libc", "macros", "parsing", "std"] }
+eos = { git = "https://github.com/rapptz/eos", version = "0.1.0", default-features = false, features = [
+  "alloc",
+  "formatting",
+  "libc",
+  "macros",
+  "parsing",
+  "std",
+] }
 esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal", branch = "next" }
 esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc", branch = "next" }
-esp-idf-sys = { version = "0.31.6", features = ["binstart"] }
+esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys", features = [
+  "binstart",
+] }
 heapless = { version = "0.7.16", features = ["cas"] }
 itertools = "0.10.3"
 mipidsi = "0.2.1"
@@ -34,6 +44,8 @@ postcard = { version = "1.0.2", default-features = false, features = [
   "use-std",
 ] }
 profont = "0.6.1"
+prost = "0.11.0"
+prost-types = "0.11.1"
 serde = { version = "1.0.143", features = ["derive"] }
 tracing = { version = "0.1.36", features = ["log", "log-always"] }
 uuid = "1.1.2"
@@ -64,8 +76,10 @@ opt-level = "z"
 [build-dependencies]
 anyhow = "1.0.61"
 embuild = "0.30.2"
+prost-build = "0.11.1"
 
-# [patch.crates-io]
+[patch.crates-io]
+esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys" }
 # esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal", branch = "next"}
 # smol = { git = "https://github.com/esp-rs-compat/smol" }
 # polling = { git = "https://github.com/esp-rs-compat/polling" }

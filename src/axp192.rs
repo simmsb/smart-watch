@@ -1,9 +1,16 @@
 #![allow(dead_code)]
 
+use std::sync::atomic::AtomicU8;
+use std::thread::JoinHandle;
+use std::time::Duration;
+
 use embedded_hal::i2c::blocking::I2c;
 
 use crate::utils::I2c0;
 
+pub static BATTERY_PERCENT: AtomicU8 = AtomicU8::new(0);
+
+#[derive(Clone)]
 pub struct Axp192 {
     inner: I2c0,
 }
@@ -194,20 +201,38 @@ const GPIO0_LDO_VOLTAGE_1_8V: u8 = 0b0000_0000;
 
 impl Axp192 {
     pub fn new(i2c: I2c0) -> color_eyre::Result<Self> {
-        let mut this = Axp192 { inner: i2c };
+        let this = Axp192 { inner: i2c };
         this.init()?;
 
         Ok(this)
     }
 
-    pub fn get_batt_voltage(&mut self) -> color_eyre::Result<f32> {
+    pub fn start_battery_thread(&self) -> JoinHandle<()> {
+        let this = self.clone();
+        std::thread::spawn(move || loop {
+            if let Ok(pct) = this.get_batt_pct() {
+                BATTERY_PERCENT.store(pct, std::sync::atomic::Ordering::Relaxed);
+            }
+
+            std::thread::sleep(Duration::from_secs(10));
+        })
+    }
+
+    pub fn get_batt_pct(&self) -> color_eyre::Result<u8> {
+        let batt_volt = self.get_batt_voltage()?;
+        let batt_pct = (batt_volt.clamp(3.0, 4.2) - 3.0) / (4.2 - 3.0);
+        let batt_pct = (batt_pct * 100.0) as u8;
+        Ok(batt_pct)
+    }
+
+    pub fn get_batt_voltage(&self) -> color_eyre::Result<f32> {
         let upper = (self.read(ADC_BATT_VOLTAGE_H)? as u16) << 4;
         let lower = self.read(ADC_BATT_VOLTAGE_L)? as u16;
         let val = (upper | lower) as f32;
         Ok(val * 1.1 / 1000.0)
     }
 
-    pub fn get_batt_power(&mut self) -> color_eyre::Result<f32> {
+    pub fn get_batt_power(&self) -> color_eyre::Result<f32> {
         let upper = (self.read(ADC_BATT_POWER_H)? as u32) << 16;
         let middle = (self.read(ADC_BATT_POWER_M)? as u32) << 8;
         let lower = self.read(ADC_BATT_POWER_L)? as u32;
@@ -215,14 +240,14 @@ impl Axp192 {
         Ok(val * 1.1 * 0.5 / 1000.0)
     }
 
-    pub fn get_vbus_current(&mut self) -> color_eyre::Result<f32> {
+    pub fn get_vbus_current(&self) -> color_eyre::Result<f32> {
         let upper = (self.read(ADC_VBUS_CURRENT_H)? as u16) << 4;
         let lower = self.read(ADC_VBUS_CURRENT_L)? as u16;
         let val = (upper | lower) as f32;
         Ok(val * 0.375 / 1000.0)
     }
 
-    pub fn set_backlight(&mut self, on: bool) -> color_eyre::Result<()> {
+    pub fn set_backlight(&self, on: bool) -> color_eyre::Result<()> {
         let val = self.read(DCDC13_LDO23_CTRL)?;
         let val = if on {
             val | DCDC13_LDO23_CTRL_LDO2
@@ -234,7 +259,7 @@ impl Axp192 {
         Ok(())
     }
 
-    fn init(&mut self) -> color_eyre::Result<()> {
+    fn init(&self) -> color_eyre::Result<()> {
         self.write(
             LDO23_OUT_VOLTAGE,
             LDO23_OUT_VOLTAGE_LDO2_3_0V | LDO23_OUT_VOLTAGE_LDO3_3_0V,
@@ -312,7 +337,7 @@ impl Axp192 {
         Ok(())
     }
 
-    fn read(&mut self, reg: u8) -> color_eyre::Result<u8> {
+    fn read(&self, reg: u8) -> color_eyre::Result<u8> {
         let mut buf = [0u8; 1];
         self.inner
             .lock()
@@ -321,7 +346,7 @@ impl Axp192 {
         Ok(buf[0])
     }
 
-    fn write(&mut self, reg: u8, val: u8) -> color_eyre::Result<()> {
+    fn write(&self, reg: u8, val: u8) -> color_eyre::Result<()> {
         self.inner.lock().unwrap().write(ADDR, &[reg, val])?;
         Ok(())
     }

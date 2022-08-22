@@ -8,15 +8,18 @@
 #![feature(const_unsafecell_get_mut)]
 
 use std::sync::atomic::AtomicBool;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use color_eyre::{eyre::eyre, Result};
 use embedded_hal::digital::blocking::InputPin;
+use eos::{DateTime, Timestamp, Utc};
 use esp_idf_hal::gpio::{Gpio37, Gpio39, SubscribedInput};
 use esp_idf_hal::{i2c, prelude::*};
 use esp_idf_sys as _;
-use tracing::info;
+use once_cell::sync::Lazy;
+use tracing::{error, info};
 
 use crate::rtc::EspRtc;
 use crate::utils::I2c0;
@@ -50,6 +53,35 @@ macro_rules! pin_handler {
     }};
 }
 
+static CURRENT_NOTIF: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
+
+fn waker_thread(wake_tx: Sender<bool>) {
+    let rx = message::get_receiver();
+
+    for msg in rx {
+        if let Some(message::message::Body::PushNotification(notif)) = msg.body {
+            CURRENT_NOTIF.lock().unwrap().replace_range(.., &notif.body);
+            let _ = wake_tx.send(true);
+        }
+    }
+}
+
+fn syncer_thread(rtc: Arc<Mutex<EspRtc>>) {
+    let rx = message::get_receiver();
+
+    for msg in rx {
+        if let Some(message::message::Body::SyncClock(message::SyncClock {
+            timestamp: Some(ts),
+        })) = msg.body
+        {
+            let ts = Timestamp::new(ts.seconds, ts.nanos as u32);
+            if let Err(err) = rtc.lock().unwrap().set(ts.to_utc()) {
+                error!(?err, "Failed to set RTC");
+            }
+        }
+    }
+}
+
 fn main() -> Result<()> {
     // Temporary. Will disappear once ESP-IDF 4.4 is released, but for now it is necessary to call this function once,
     // or else some patches to the runtime implemented by esp-idf-sys might not link properly.
@@ -72,8 +104,8 @@ fn main() -> Result<()> {
         i2c::config::MasterConfig::default().baudrate(400.kHz().into()),
     )?);
 
-    let mut pwr = axp192::Axp192::new(i2c0.clone())?;
-    let mut rtc = EspRtc::new(i2c0)?;
+    let pwr = axp192::Axp192::new(i2c0.clone())?;
+    let rtc = Arc::new(Mutex::new(EspRtc::new(i2c0)?));
     let mut display = display::Display::new(
         peripherals.spi2,
         pins.gpio13.into_output()?,
@@ -84,9 +116,10 @@ fn main() -> Result<()> {
     )?;
 
     let button_state = Arc::new(AtomicBool::new(false));
-    let (btn_tx, btn_rx) = std::sync::mpsc::channel();
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel();
     let btn_callback = {
         let button_state = Arc::clone(&button_state);
+        let wake_tx = wake_tx.clone();
         move |p: &Gpio37<SubscribedInput>| {
             let current = p.is_low().unwrap();
             let prev = button_state.swap(current, std::sync::atomic::Ordering::Relaxed);
@@ -94,19 +127,31 @@ fn main() -> Result<()> {
             info!(current, prev, "button");
 
             if prev != current {
-                let _ = btn_tx.send(current);
+                let _ = wake_tx.send(current);
             }
         }
     };
 
+    let _waker_thread = std::thread::spawn({
+        let wake_tx = wake_tx.clone();
+        move || waker_thread(wake_tx)
+    });
+
+    let _syncer_thread = std::thread::Builder::new().stack_size(4096).spawn({
+        let rtc = Arc::clone(&rtc);
+        move || syncer_thread(rtc)
+    });
+
+    let _battery_thread = pwr.start_battery_thread();
+
     let _button = pin_handler!(pins.gpio37, btn_callback);
 
+    bluetooth::init_ble()?;
+
     loop {
-        let mut end_time = Instant::now() + Duration::from_secs(10);
+        let mut end_time = Instant::now() + Duration::from_secs(20);
 
         'inner: loop {
-            info!("The time is: {}", rtc.read()?);
-
             let batt_pwr = pwr.get_batt_power()?;
             let batt_vol = pwr.get_batt_voltage()?;
             let vbus_cur = pwr.get_vbus_current()?;
@@ -114,12 +159,15 @@ fn main() -> Result<()> {
                 "Battery pwr: {}, volt: {}. vbus cur: {}",
                 batt_pwr, batt_vol, vbus_cur
             );
-            display.display_time(batt_vol)?;
 
-            while let Ok(v) = btn_rx.try_recv() {
+            let now = rtc.lock().unwrap().read()?;
+
+            display.display_time(now, batt_vol)?;
+
+            while let Ok(v) = wake_rx.try_recv() {
                 info!("Button press: {v}");
                 if v == true {
-                    end_time = Instant::now() + Duration::from_secs(10);
+                    end_time = Instant::now() + Duration::from_secs(20);
                 }
             }
 
@@ -132,10 +180,8 @@ fn main() -> Result<()> {
             std::thread::sleep(Duration::from_secs(1));
         }
 
-        while btn_rx.recv().unwrap() == false {}
+        while wake_rx.recv().unwrap() == false {}
 
         pwr.set_backlight(true)?;
     }
-
-    // bluetooth::init_ble(peripherals.uart0)?;
 }

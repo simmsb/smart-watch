@@ -104,7 +104,7 @@ impl Display {
             .init(
                 &mut Ets,
                 mipidsi::DisplayOptions {
-                    orientation: Orientation::Landscape(true),
+                    orientation: Orientation::LandscapeInverted(true),
                     invert_vertical_refresh: false,
                     color_order: mipidsi::ColorOrder::Bgr,
                     invert_horizontal_refresh: false,
@@ -125,11 +125,32 @@ impl Display {
         self.display.cropped(&area)
     }
 
-    pub fn display_time(&mut self, bat_volt: f32) -> color_eyre::Result<()> {
-        let now = eos::DateTime::utc_now();
+    pub fn display_time(&mut self, now: eos::DateTime, bat_volt: f32) -> color_eyre::Result<()> {
+        let batt_charge = (bat_volt.clamp(3.0, 4.2) - 3.0) / (4.2 - 3.0);
+        let batt_pct = (batt_charge * 100.0) as u8;
 
-        let bat_charge = (bat_volt.clamp(3.0, 4.2) - 3.0) / (4.2 - 3.0);
-        let bat_charge = (bat_charge * 100.0) as u8;
+        let text = now.format(format_spec!("%d-%m-%Y")).to_string();
+        let character_style = MonoTextStyleBuilder::new()
+            .font(&profont::PROFONT_24_POINT)
+            .text_color(Rgb565::WHITE)
+            .background_color(Rgb565::BLACK)
+            .build();
+
+        let textbox_style = TextBoxStyleBuilder::new()
+            .height_mode(embedded_text::style::HeightMode::FitToText)
+            .alignment(HorizontalAlignment::Left)
+            .vertical_alignment(embedded_text::alignment::VerticalAlignment::Top)
+            .build();
+
+        let mut canvas = self.cropped_display();
+        TextBox::with_textbox_style(
+            &text,
+            Rectangle::new(Point::new(0, 0), Size::new(240, 29)),
+            character_style,
+            textbox_style,
+        )
+        .draw(&mut canvas)
+        .map_err(|e| eyre!("Failed to draw to display: {:?}", e))?;
 
         let text = now.format(format_spec!("%H:%M:%S")).to_string();
         let character_style = MonoTextStyleBuilder::new()
@@ -144,7 +165,6 @@ impl Display {
             .vertical_alignment(embedded_text::alignment::VerticalAlignment::Middle)
             .build();
 
-        let mut canvas = self.cropped_display();
         TextBox::with_textbox_style(
             &text,
             Rectangle::new(
@@ -157,7 +177,7 @@ impl Display {
         .draw(&mut canvas)
         .map_err(|e| eyre!("Failed to draw to display: {:?}", e))?;
 
-        let text = format!("{bat_charge}%");
+        let text = format!("{batt_pct}%");
 
         let textbox_style = TextBoxStyleBuilder::new()
             .height_mode(embedded_text::style::HeightMode::FitToText)
@@ -167,7 +187,7 @@ impl Display {
             .trailing_spaces(true)
             .build();
 
-        let bounds = Rectangle::new(Point::new(120, 0), Size::new(240 - 120, 29));
+        let bounds = Rectangle::new(Point::new(0, 0), Size::new(240, 29));
 
         TextBox::with_textbox_style(&text, bounds, character_style, textbox_style)
             .draw(&mut canvas)

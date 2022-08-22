@@ -1,36 +1,30 @@
 use core::ffi::{c_char, c_int};
 use std::cell::UnsafeCell;
 use std::ffi::{c_void, CStr};
-use std::sync::Mutex;
 
-use esp_idf_hal::serial::Uart;
+use color_eyre::eyre::eyre;
 use esp_idf_sys::{
     ble_gap_adv_params, ble_gap_adv_set_fields, ble_gap_adv_start, ble_gap_conn_desc,
     ble_gap_conn_find, ble_gap_event, ble_gatt_access_ctxt, ble_gatt_chr_def,
-    ble_gatt_register_ctxt, ble_gatt_svc_def, ble_gattc_notify_custom, ble_gatts_add_svcs,
-    ble_gatts_count_cfg, ble_hs_adv_fields, ble_hs_cfg, ble_hs_id_copy_addr, ble_hs_id_infer_auto,
-    ble_hs_mbuf_from_flat, ble_hs_mbuf_to_flat, ble_hs_util_ensure_addr, ble_store_util_status_rr,
-    ble_uuid128_t, ble_uuid16_t, ble_uuid_cmp, ble_uuid_t, ble_uuid_to_str, esp,
-    esp_nimble_hci_and_controller_init, nimble_port_freertos_deinit, nimble_port_freertos_init,
-    nimble_port_init, nimble_port_run, os_mbuf, os_mbuf_append, rand, strlen, uart_config_t,
-    uart_driver_install, uart_event_t, uart_hw_flowcontrol_t_UART_HW_FLOWCTRL_RTS,
-    uart_param_config, uart_parity_t_UART_PARITY_DISABLE, uart_set_pin,
-    uart_stop_bits_t_UART_STOP_BITS_1, uart_word_length_t_UART_DATA_8_BITS, xQueueReceive,
-    QueueHandle_t, TickType_t, BLE_ATT_ERR_INSUFFICIENT_RES, BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN,
-    BLE_ATT_ERR_UNLIKELY, BLE_GAP_CONN_MODE_UND, BLE_GAP_DISC_MODE_GEN, BLE_GAP_EVENT_ADV_COMPLETE,
-    BLE_GAP_EVENT_CONNECT, BLE_GAP_EVENT_CONN_UPDATE, BLE_GAP_EVENT_DISCONNECT, BLE_GAP_EVENT_MTU,
+    ble_gatt_register_ctxt, ble_gatt_svc_def, ble_gatts_add_svcs, ble_gatts_count_cfg,
+    ble_hs_adv_fields, ble_hs_cfg, ble_hs_id_copy_addr, ble_hs_id_infer_auto, ble_hs_mbuf_to_flat,
+    ble_hs_util_ensure_addr, ble_store_util_status_rr, ble_uuid128_t, ble_uuid16_t, ble_uuid_cmp,
+    ble_uuid_t, ble_uuid_to_str, esp, esp_nimble_hci_and_controller_init,
+    nimble_port_freertos_deinit, nimble_port_freertos_init, nimble_port_init, nimble_port_run,
+    os_mbuf_append, strlen, BLE_ATT_ERR_INSUFFICIENT_RES, BLE_GAP_CONN_MODE_UND,
+    BLE_GAP_DISC_MODE_GEN, BLE_GAP_EVENT_ADV_COMPLETE, BLE_GAP_EVENT_CONNECT,
+    BLE_GAP_EVENT_CONN_UPDATE, BLE_GAP_EVENT_DISCONNECT, BLE_GAP_EVENT_MTU,
     BLE_GATT_ACCESS_OP_READ_CHR, BLE_GATT_ACCESS_OP_WRITE_CHR, BLE_GATT_CHR_F_NOTIFY,
-    BLE_GATT_CHR_F_READ, BLE_GATT_CHR_F_READ_ENC, BLE_GATT_CHR_F_WRITE, BLE_GATT_CHR_F_WRITE_ENC,
-    BLE_GATT_REGISTER_OP_CHR, BLE_GATT_REGISTER_OP_DSC, BLE_GATT_REGISTER_OP_SVC,
-    BLE_GATT_SVC_TYPE_PRIMARY, BLE_HS_ADV_F_BREDR_UNSUP, BLE_HS_ADV_F_DISC_GEN,
-    BLE_HS_ADV_TX_PWR_LVL_AUTO, BLE_UUID_STR_LEN, BLE_UUID_TYPE_128, BLE_UUID_TYPE_16,
-    CONFIG_BT_NIMBLE_MAX_CONNECTIONS, UART_PIN_NO_CHANGE,
+    BLE_GATT_CHR_F_READ, BLE_GATT_CHR_F_WRITE, BLE_GATT_REGISTER_OP_CHR, BLE_GATT_REGISTER_OP_DSC,
+    BLE_GATT_REGISTER_OP_SVC, BLE_GATT_SVC_TYPE_PRIMARY, BLE_HS_ADV_F_BREDR_UNSUP,
+    BLE_HS_ADV_F_DISC_GEN, BLE_HS_ADV_TX_PWR_LVL_AUTO, BLE_UUID_STR_LEN, BLE_UUID_TYPE_128,
+    BLE_UUID_TYPE_16, CONFIG_BT_NIMBLE_MAX_CONNECTIONS,
 };
-use once_cell::sync::Lazy;
+use prost::Message;
 use tracing::{error, info};
 
-pub static CURRENT_MESSAGE: Lazy<Mutex<String>> =
-    Lazy::new(|| Mutex::new("Hello World".to_owned()));
+use crate::axp192::BATTERY_PERCENT;
+use crate::message;
 
 const BLE_UUID_TYPE_128_: ble_uuid_t = ble_uuid_t {
     type_: BLE_UUID_TYPE_128 as u8,
@@ -48,102 +42,57 @@ const fn inv(
     ]
 }
 
-static mut GATT_SVR_SVC_SEC_TEST_UUID: ble_uuid128_t = ble_uuid128_t {
-    u: BLE_UUID_TYPE_128_,
-    value: [
-        0x2d, 0x71, 0xa2, 0x59, 0xb4, 0x58, 0xc8, 0x12, 0x99, 0x99, 0x43, 0x95, 0x12, 0x2f, 0x46,
-        0x59,
-    ],
+static mut BLE_BAT_SERVICE: ble_uuid16_t = ble_uuid16_t {
+    u: BLE_UUID_TYPE_16_,
+    value: 0x180f,
 };
 
-static mut GATT_SVR_SVC_SEC_TEST_RAND_UUID: ble_uuid128_t = ble_uuid128_t {
-    u: BLE_UUID_TYPE_128_,
-    value: [
-        0xf6, 0x6d, 0xc9, 0x07, 0x71, 0x00, 0x16, 0xb0, 0xe1, 0x45, 0x7e, 0x89, 0x9e, 0x65, 0x3a,
-        0x5c,
-    ],
+static mut BLE_BAT_CHAR: ble_uuid16_t = ble_uuid16_t {
+    u: BLE_UUID_TYPE_16_,
+    value: 0x2A19,
 };
 
-static mut GATT_SVR_SVC_SEC_TEST_STATIC_UUID: ble_uuid128_t = ble_uuid128_t {
+static mut BLE_DATA_IN_SERVICE: ble_uuid128_t = ble_uuid128_t {
     u: BLE_UUID_TYPE_128_,
-    value: [
-        0xf7, 0x6d, 0xc9, 0x07, 0x71, 0x00, 0x16, 0xb0, 0xe1, 0x45, 0x7e, 0x89, 0x9e, 0x65, 0x3a,
-        0x5c,
-    ],
+    value: inv(*uuid::uuid!("98200001-2160-4474-82b4-1a25cef92156").as_bytes()),
 };
 
-static mut GATT_SVR_SVC_SEC_TEST_STATIC_VAL: u8 = 0;
+static mut BLE_DATA_IN_CHAR: ble_uuid128_t = ble_uuid128_t {
+    u: BLE_UUID_TYPE_128_,
+    value: inv(*uuid::uuid!("98200002-2160-4474-82b4-1a25cef92156").as_bytes()),
+};
 
-static mut GATT_SECURITY_SERVICES: [esp_idf_sys::ble_gatt_svc_def; 2] = unsafe {
+static mut BLE_DATA_IN_HANDLE: UnsafeCell<u16> = UnsafeCell::new(0);
+static mut BLE_LE_BAT_CHAR_HANDLE: UnsafeCell<u16> = UnsafeCell::new(0);
+
+static mut GATT_SERVICES: [esp_idf_sys::ble_gatt_svc_def; 3] = unsafe {
     [
         ble_gatt_svc_def {
             type_: BLE_GATT_SVC_TYPE_PRIMARY as u8,
-            uuid: &GATT_SVR_SVC_SEC_TEST_UUID.u,
+            uuid: &BLE_BAT_SERVICE.u,
             characteristics: &[
                 ble_gatt_chr_def {
-                    uuid: &GATT_SVR_SVC_SEC_TEST_RAND_UUID.u,
-                    access_cb: Some(gatt_svr_chr_access_sec_test),
-                    flags: (BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC) as u16,
+                    uuid: &BLE_BAT_CHAR.u,
+                    access_cb: Some(ble_batt_handler),
+                    val_handle: BLE_LE_BAT_CHAR_HANDLE.get(),
+                    flags: (BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY) as u16,
                     arg: std::ptr::null_mut(),
                     descriptors: std::ptr::null_mut(),
                     min_key_size: 0,
-                    val_handle: std::ptr::null_mut(),
-                },
-                ble_gatt_chr_def {
-                    uuid: &GATT_SVR_SVC_SEC_TEST_STATIC_UUID.u,
-                    access_cb: Some(gatt_svr_chr_access_sec_test),
-                    flags: (BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_ENC) as u16,
-                    arg: std::ptr::null_mut(),
-                    descriptors: std::ptr::null_mut(),
-                    min_key_size: 0,
-                    val_handle: std::ptr::null_mut(),
                 },
                 const_zero::const_zero!(ble_gatt_chr_def),
             ] as *const _,
             includes: std::ptr::null_mut(),
         },
-        const_zero::const_zero!(ble_gatt_svc_def),
-    ]
-};
-
-static mut BLE_LE_NRF_SERVICE: ble_uuid128_t = ble_uuid128_t {
-    u: BLE_UUID_TYPE_128_,
-    value: inv(*uuid::uuid!("6e400001-b5a3-f393-e0a9-e50e24dcca9e").as_bytes()),
-};
-
-static mut BLE_LE_NRF_CHAR_RW2: ble_uuid128_t = ble_uuid128_t {
-    u: BLE_UUID_TYPE_128_,
-    value: inv(*uuid::uuid!("6e400002-b5a3-f393-e0a9-e50e24dcca9e").as_bytes()),
-};
-
-static mut BLE_LE_NRF_CHAR_RW3: ble_uuid128_t = ble_uuid128_t {
-    u: BLE_UUID_TYPE_128_,
-    value: inv(*uuid::uuid!("6e400003-b5a3-f393-e0a9-e50e24dcca9e").as_bytes()),
-};
-
-static mut BLE_LE_NRF_CHAR_RX_HANDLE: UnsafeCell<u16> = UnsafeCell::new(0);
-static mut BLE_LE_NRF_CHAR_TX_HANDLE: UnsafeCell<u16> = UnsafeCell::new(0);
-
-static mut GATT_SERVICES: [esp_idf_sys::ble_gatt_svc_def; 2] = unsafe {
-    [
         ble_gatt_svc_def {
             type_: BLE_GATT_SVC_TYPE_PRIMARY as u8,
-            uuid: &BLE_LE_NRF_SERVICE.u,
+            uuid: &BLE_DATA_IN_SERVICE.u,
             characteristics: &[
                 ble_gatt_chr_def {
-                    uuid: &BLE_LE_NRF_CHAR_RW2.u,
-                    access_cb: Some(ble_svc_gatt_handler),
-                    val_handle: BLE_LE_NRF_CHAR_TX_HANDLE.get(),
+                    uuid: &BLE_DATA_IN_CHAR.u,
+                    access_cb: Some(ble_data_in_handler),
+                    val_handle: BLE_DATA_IN_HANDLE.get(),
                     flags: BLE_GATT_CHR_F_WRITE as u16,
-                    arg: std::ptr::null_mut(),
-                    descriptors: std::ptr::null_mut(),
-                    min_key_size: 0,
-                },
-                ble_gatt_chr_def {
-                    uuid: &BLE_LE_NRF_CHAR_RW3.u,
-                    access_cb: Some(ble_svc_gatt_handler),
-                    val_handle: BLE_LE_NRF_CHAR_RX_HANDLE.get(),
-                    flags: (BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY) as u16,
                     arg: std::ptr::null_mut(),
                     descriptors: std::ptr::null_mut(),
                     min_key_size: 0,
@@ -187,7 +136,35 @@ unsafe extern "C" fn ble_spp_server_host_task(_param: *mut c_void) {
     nimble_port_freertos_deinit();
 }
 
-unsafe extern "C" fn ble_svc_gatt_handler(
+unsafe extern "C" fn ble_batt_handler(
+    conn_handle: u16,
+    attr_handle: u16,
+    ctxt: *mut ble_gatt_access_ctxt,
+    _arg: *mut c_void,
+) -> i32 {
+    let ctxt_ = *ctxt;
+
+    let uuid = (*ctxt_.__bindgen_anon_1.chr).uuid;
+
+    assert_eq!(ble_uuid_cmp(uuid, &BLE_BAT_CHAR.u), 0);
+    assert_eq!(ctxt_.op as u32, BLE_GATT_ACCESS_OP_READ_CHR);
+
+    let batt_level = BATTERY_PERCENT.load(std::sync::atomic::Ordering::Relaxed);
+    info!(batt_level, "Reading battery level");
+
+    let rc = os_mbuf_append(
+        ctxt_.om,
+        &batt_level as *const u8 as *const _,
+        std::mem::size_of::<u8>() as u16,
+    );
+    if rc != 0 {
+        return BLE_ATT_ERR_INSUFFICIENT_RES as i32;
+    }
+
+    0
+}
+
+unsafe extern "C" fn ble_data_in_handler(
     conn_handle: u16,
     attr_handle: u16,
     ctxt: *mut ble_gatt_access_ctxt,
@@ -195,9 +172,6 @@ unsafe extern "C" fn ble_svc_gatt_handler(
 ) -> i32 {
     let ctxt_ = *ctxt;
     match ctxt_.op as u32 {
-        BLE_GATT_ACCESS_OP_READ_CHR => {
-            info!("Callback for read");
-        }
         BLE_GATT_ACCESS_OP_WRITE_CHR => {
             let len = (*ctxt_.om).om_len;
 
@@ -218,17 +192,24 @@ unsafe extern "C" fn ble_svc_gatt_handler(
                 error!("Couldn't fetch mbuf in write handler");
                 return 0;
             }
+            let buf = &buf[..out_len as usize];
 
-            let s = match std::str::from_utf8(&buf[..out_len as usize]) {
-                Ok(s) => s,
-                Err(e) => {
-                    error!(?e, "Failed decoding string as utf8");
+            let msg = match message::Message::decode(buf)
+                .map_err(|err| eyre!("Failed to decode message: {:?}", err))
+                .and_then(message::validate_msg)
+            {
+                Ok(msg) => msg,
+                Err(err) => {
+                    error!(?err, "While decoding a message");
                     return 0;
                 }
             };
 
-            CURRENT_MESSAGE.lock().unwrap().replace_range(.., s);
-            info!(s, "Updated message");
+            info!(?msg, "Got message");
+
+            if let Err(err) = message::push_message(msg) {
+                error!(?err, "Failed to push message");
+            }
         }
         _ => {}
     }
@@ -236,14 +217,10 @@ unsafe extern "C" fn ble_svc_gatt_handler(
     0
 }
 
-static mut GATT_SVR_SVC_ALERT_UUID: ble_uuid16_t = ble_uuid16_t {
-    u: BLE_UUID_TYPE_16_,
-    value: 0x1811,
-};
-
 unsafe fn ble_spp_server_advertise() {
     let name = ble_svc_gap_device_name();
-    static UUIDS16: &[ble_uuid16_t] = &[unsafe { GATT_SVR_SVC_ALERT_UUID }];
+    static UUIDS16: &[ble_uuid16_t] = &[unsafe { BLE_BAT_SERVICE }];
+    // static UUIDS128: &[ble_uuid128_t] = &[unsafe { BLE_LE_NRF_SERVICE }];
 
     let mut fields = ble_hs_adv_fields {
         flags: (BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP) as u8,
@@ -252,6 +229,8 @@ unsafe fn ble_spp_server_advertise() {
         name_len: strlen(name) as u8,
         uuids16: UUIDS16.as_ptr(),
         num_uuids16: UUIDS16.len() as u8,
+        // uuids128: UUIDS128.as_ptr(),
+        // num_uuids128: UUIDS128.len() as u8,
         ..Default::default()
     };
 
@@ -282,7 +261,10 @@ unsafe fn ble_spp_server_advertise() {
     );
     if rc != 0 {
         error!(rc, "error enabling advertisement");
+        return;
     }
+
+    info!("Done ble advertise");
 }
 
 unsafe extern "C" fn ble_spp_server_gap_event(event: *mut ble_gap_event, _arg: *mut c_void) -> i32 {
@@ -309,7 +291,7 @@ unsafe extern "C" fn ble_spp_server_gap_event(event: *mut ble_gap_event, _arg: *
                 CONNECTION_HANDLES[connect.conn_handle as usize] = connect.conn_handle;
             }
 
-            if connect.status != 0 || CONFIG_BT_NIMBLE_MAX_CONNECTIONS > 1 {
+            if connect.status != 0 {
                 ble_spp_server_advertise();
             }
         }
@@ -352,83 +334,6 @@ unsafe extern "C" fn ble_spp_server_gap_event(event: *mut ble_gap_event, _arg: *
 }
 // sepples moment
 
-unsafe fn gatt_svr_chr_write(
-    om: *mut os_mbuf,
-    min_len: u16,
-    max_len: u16,
-    dst: *mut c_void,
-    len: *mut u16,
-) -> i32 {
-    let len_ = (*om).om_len;
-
-    if len_ < min_len || len_ > max_len {
-        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN as i32;
-    }
-
-    let rc = ble_hs_mbuf_to_flat(om, dst, max_len, len);
-    if rc != 0 {
-        return BLE_ATT_ERR_UNLIKELY as i32;
-    }
-
-    0
-}
-
-unsafe extern "C" fn gatt_svr_chr_access_sec_test(
-    _conn_handle: u16,
-    _attr_handle: u16,
-    ctxt: *mut ble_gatt_access_ctxt,
-    _arg: *mut c_void,
-) -> i32 {
-    let uuid = (*(*ctxt).__bindgen_anon_1.chr).uuid;
-
-    if ble_uuid_cmp(uuid, &GATT_SVR_SVC_SEC_TEST_RAND_UUID.u) == 0 {
-        let r = rand();
-        let rc = os_mbuf_append(
-            (*ctxt).om,
-            &r as *const i32 as *const _,
-            std::mem::size_of_val(&r) as u16,
-        );
-
-        if rc == 0 {
-            return 0;
-        } else {
-            return BLE_ATT_ERR_INSUFFICIENT_RES as i32;
-        }
-    }
-
-    if ble_uuid_cmp(uuid, &GATT_SVR_SVC_SEC_TEST_STATIC_UUID.u) == 0 {
-        match (*ctxt).op as u32 {
-            BLE_GATT_ACCESS_OP_READ_CHR => {
-                let rc = os_mbuf_append(
-                    (*ctxt).om,
-                    &GATT_SVR_SVC_SEC_TEST_STATIC_VAL as *const u8 as *const _,
-                    std::mem::size_of::<u8>() as u16,
-                );
-                if rc == 0 {
-                    return 0;
-                } else {
-                    return BLE_ATT_ERR_INSUFFICIENT_RES as i32;
-                }
-            }
-            BLE_GATT_ACCESS_OP_WRITE_CHR => {
-                let rc = gatt_svr_chr_write(
-                    (*ctxt).om,
-                    std::mem::size_of::<u8>() as u16,
-                    std::mem::size_of::<u8>() as u16,
-                    &mut GATT_SVR_SVC_SEC_TEST_STATIC_VAL as *mut u8 as *mut _,
-                    std::ptr::null_mut(),
-                );
-                return rc;
-            }
-            _ => {
-                return BLE_ATT_ERR_UNLIKELY as i32;
-            }
-        }
-    }
-
-    0
-}
-
 unsafe extern "C" fn gatt_svr_register_cb(ctxt: *mut ble_gatt_register_ctxt, _arg: *mut c_void) {
     let mut buf = [0 as c_char; BLE_UUID_STR_LEN as usize];
     let ctxt_ = *ctxt;
@@ -453,93 +358,10 @@ unsafe extern "C" fn gatt_svr_register_cb(ctxt: *mut ble_gatt_register_ctxt, _ar
     }
 }
 
-static mut SPP_COMMON_QUEUE_HANDLE: QueueHandle_t = std::ptr::null_mut();
 static mut CONNECTION_HANDLES: [u16; CONFIG_BT_NIMBLE_MAX_CONNECTIONS as usize] =
     [0; CONFIG_BT_NIMBLE_MAX_CONNECTIONS as usize];
 
-fn ble_uart_task<U: Uart>(_uart: U) {
-    info!("Starting ble uart task");
-
-    let mut event: uart_event_t = uart_event_t::default();
-
-    loop {
-        // yummy
-        if unsafe {
-            xQueueReceive(
-                SPP_COMMON_QUEUE_HANDLE,
-                &mut event as *mut uart_event_t as *mut _,
-                TickType_t::MAX,
-            )
-        } == 1
-            && event.type_ == esp_idf_sys::uart_event_type_t_UART_DATA
-            && event.size > 0
-        {
-            static mut NTF: [u8; 1] = [0];
-            unsafe {
-                NTF[0] = 90;
-            }
-
-            for &handle in unsafe { &CONNECTION_HANDLES } {
-                if handle == 0 {
-                    continue;
-                }
-
-                let txom: *mut os_mbuf = unsafe {
-                    ble_hs_mbuf_from_flat(
-                        &NTF as *const u8 as *const _,
-                        std::mem::size_of::<[u8; 1]>() as u16,
-                    )
-                };
-
-                let rc = unsafe {
-                    ble_gattc_notify_custom(handle, *BLE_LE_NRF_CHAR_RX_HANDLE.get_mut(), txom)
-                };
-
-                if rc == 0 {
-                    info!("Notification sent");
-                } else {
-                    error!(rc, "Erorr sending notif");
-                }
-            }
-        }
-    }
-}
-
-unsafe fn ble_uart_init<U: Uart + Send + 'static>(uart: U) -> color_eyre::Result<()> {
-    let uart_config = uart_config_t {
-        baud_rate: 115200,
-        data_bits: uart_word_length_t_UART_DATA_8_BITS,
-        parity: uart_parity_t_UART_PARITY_DISABLE,
-        stop_bits: uart_stop_bits_t_UART_STOP_BITS_1,
-        flow_ctrl: uart_hw_flowcontrol_t_UART_HW_FLOWCTRL_RTS,
-        rx_flow_ctrl_thresh: 122,
-        ..uart_config_t::default()
-    };
-
-    esp!(uart_param_config(U::port(), &uart_config))?;
-    esp!(uart_set_pin(
-        U::port(),
-        UART_PIN_NO_CHANGE,
-        UART_PIN_NO_CHANGE,
-        UART_PIN_NO_CHANGE,
-        UART_PIN_NO_CHANGE
-    ))?;
-
-    esp!(uart_driver_install(
-        U::port(),
-        4096,
-        8192,
-        10,
-        &mut SPP_COMMON_QUEUE_HANDLE,
-        0
-    ))?;
-
-    std::thread::spawn(move || ble_uart_task(uart));
-
-    Ok(())
-}
-
-pub fn init_ble<U: Uart + Send + 'static>(uart: U) -> color_eyre::Result<()> {
+pub fn init_ble() -> color_eyre::Result<()> {
     unsafe {
         if let Err(err) = esp!(esp_idf_sys::nvs_flash_init()) {
             if err.code() == esp_idf_sys::ESP_ERR_NVS_NO_FREE_PAGES
@@ -556,8 +378,6 @@ pub fn init_ble<U: Uart + Send + 'static>(uart: U) -> color_eyre::Result<()> {
 
         nimble_port_init();
 
-        ble_uart_init(uart)?;
-
         ble_hs_cfg.reset_cb = Some(ble_spp_server_on_reset);
         ble_hs_cfg.sync_cb = Some(ble_spp_server_on_sync);
         ble_hs_cfg.gatts_register_cb = Some(gatt_svr_register_cb);
@@ -571,12 +391,10 @@ pub fn init_ble<U: Uart + Send + 'static>(uart: U) -> color_eyre::Result<()> {
         // gatt_svr_init
         ble_svc_gap_init();
         ble_svc_gatt_init();
-        esp!(ble_gatts_count_cfg(&GATT_SECURITY_SERVICES as *const _))?;
-        esp!(ble_gatts_add_svcs(&GATT_SECURITY_SERVICES as *const _))?;
         esp!(ble_gatts_count_cfg(&GATT_SERVICES as *const _))?;
         esp!(ble_gatts_add_svcs(&GATT_SERVICES as *const _))?;
         esp!(ble_svc_gap_device_name_set(
-            b"D21 Scrolling Text\0" as *const u8 as *const _
+            b"\xF0\x9F\xA6\x80\0" as *const u8 as *const _
         ))?;
         ble_store_config_init();
         nimble_port_freertos_init(Some(ble_spp_server_host_task));
