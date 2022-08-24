@@ -2,6 +2,7 @@ use core::ffi::{c_char, c_int};
 use std::cell::UnsafeCell;
 use std::ffi::{c_void, CStr};
 use std::sync::Mutex;
+use std::sync::atomic::AtomicU8;
 use std::time::Duration;
 
 use color_eyre::eyre::eyre;
@@ -35,6 +36,14 @@ pub static QUEUE: Lazy<(
     channel::Sender<message::Notification>,
     channel::Receiver<message::Notification>,
 )> = Lazy::new(|| channel::bounded(4));
+
+static CONN_COUNT: AtomicU8 = AtomicU8::new(0);
+
+pub fn ble_connected() -> bool {
+    let n = CONN_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+    info!(n, "Ongoing bluetooth connections");
+    n > 0
+}
 
 const BLE_UUID_TYPE_128_: ble_uuid_t = ble_uuid_t {
     type_: BLE_UUID_TYPE_128 as u8,
@@ -162,8 +171,8 @@ unsafe extern "C" fn ble_spp_server_host_task(_param: *mut c_void) {
 }
 
 unsafe extern "C" fn ble_batt_handler(
-    conn_handle: u16,
-    attr_handle: u16,
+    _conn_handle: u16,
+    _attr_handle: u16,
     ctxt: *mut ble_gatt_access_ctxt,
     _arg: *mut c_void,
 ) -> i32 {
@@ -322,6 +331,7 @@ unsafe extern "C" fn ble_spp_server_gap_event(event: *mut ble_gap_event, _arg: *
                 assert_eq!(rc, 0, "ble_gap_conn_find");
                 info!(handle = connect.conn_handle, ?desc, "Conn desc");
                 CONNECTION_HANDLES[connect.conn_handle as usize] = connect.conn_handle;
+                CONN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
 
             if connect.status != 0 {
@@ -332,6 +342,7 @@ unsafe extern "C" fn ble_spp_server_gap_event(event: *mut ble_gap_event, _arg: *
         BLE_GAP_EVENT_DISCONNECT => {
             let disconnect = event_.__bindgen_anon_1.disconnect;
             info!(reason = disconnect.reason, "Disconnect");
+            CONN_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         }
 
         BLE_GAP_EVENT_CONN_UPDATE => {

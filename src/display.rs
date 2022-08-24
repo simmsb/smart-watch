@@ -8,7 +8,7 @@ use embedded_graphics::mono_font::iso_8859_14::FONT_10X20;
 use embedded_graphics::mono_font::{MonoTextStyle, MonoTextStyleBuilder};
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::{Dimensions, DrawTarget, DrawTargetExt, Point, RgbColor, Size};
-use embedded_graphics::primitives::Rectangle;
+use embedded_graphics::primitives::{Primitive, PrimitiveStyle, Rectangle};
 use embedded_graphics::text::Alignment;
 use embedded_graphics::Drawable;
 use embedded_text::alignment::HorizontalAlignment;
@@ -23,6 +23,7 @@ use mipidsi::models::{Model, ST7789};
 use mipidsi::Orientation;
 use profont::PROFONT_24_POINT;
 
+use crate::bluetooth;
 use crate::ingerland::INGERLAND;
 
 type DisplayType = mipidsi::Display<
@@ -128,7 +129,7 @@ impl Display {
     }
 
     pub fn display_time(&mut self, now: eos::DateTime, bat_volt: f32) -> color_eyre::Result<()> {
-        let batt_charge = (bat_volt.clamp(3.0, 4.2) - 3.0) / (4.2 - 3.0);
+        let batt_charge = (bat_volt.clamp(3.2, 4.2) - 3.2) / (4.2 - 3.2);
         let batt_pct = (batt_charge * 100.0) as u8;
 
         let now = now.in_timezone(INGERLAND);
@@ -191,11 +192,45 @@ impl Display {
             .trailing_spaces(true)
             .build();
 
-        let bounds = Rectangle::new(Point::new(0, 0), Size::new(240, 29));
+        let bounds = Rectangle::new(
+            Point::new(0, 0),
+            Size::new(240, PROFONT_24_POINT.character_size.height),
+        );
 
         TextBox::with_textbox_style(&text, bounds, character_style, textbox_style)
             .draw(&mut canvas)
             .map_err(|e| eyre!("Failed to draw to display: {:?}", e))?;
+
+        if bluetooth::ble_connected() {
+            let textbox_style = TextBoxStyleBuilder::new()
+                .height_mode(embedded_text::style::HeightMode::FitToText)
+                .alignment(HorizontalAlignment::Left)
+                .vertical_alignment(embedded_text::alignment::VerticalAlignment::Bottom)
+                .leading_spaces(true)
+                .trailing_spaces(true)
+                .build();
+
+            let bounds = Rectangle::new(
+                Point::new(0, 135 - PROFONT_24_POINT.character_size.height as i32),
+                Size::new(240, PROFONT_24_POINT.character_size.height),
+            );
+
+            TextBox::with_textbox_style("ble", bounds, character_style, textbox_style)
+                .draw(&mut canvas)
+                .map_err(|e| eyre!("Failed to draw to display: {:?}", e))?;
+        } else {
+            let rect = Rectangle::new(
+                Point::new(0, 135 - PROFONT_24_POINT.character_size.height as i32),
+                Size::new(
+                    3 * (PROFONT_24_POINT.character_size.width
+                        + PROFONT_24_POINT.character_spacing),
+                    PROFONT_24_POINT.character_size.height,
+                ),
+            )
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK));
+            rect.draw(&mut canvas)
+                .map_err(|e| eyre!("Failed to draw to display: {:?}", e))?;
+        }
 
         Ok(())
     }
