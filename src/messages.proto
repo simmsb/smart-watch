@@ -12,10 +12,39 @@ message PushNotification {
     string body = 1;
 }
 
+message SetPin {
+    Pins pin = 1;
+    PinOperation op = 2;
+}
+
 message Message {
     uint32 origin = 1;
     oneof body {
         SyncClock sync_clock = 2;
         PushNotification push_notification = 3;
+        SetPin set_pin = 4;
     }
+}
+
+message Notification {
+    oneof body {
+        PinRead pin_read = 1;
+    }
+}
+
+message PinRead {
+    Pins pin = 1;
+    float value = 2;
+}
+
+enum PinOperation {
+    SetHigh = 0;
+    SetLow = 1;
+    AnalogueRead = 2;
+}
+
+enum Pins {
+    G26 = 0;
+    G25 = 1;
+    G0 = 2;
 }

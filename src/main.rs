@@ -13,9 +13,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use color_eyre::{eyre::eyre, Result};
-use embedded_hal::digital::blocking::InputPin;
-use eos::{DateTime, Timestamp, Utc};
-use esp_idf_hal::gpio::{Gpio37, Gpio39, SubscribedInput};
+use eh_0_2::prelude::_embedded_hal_adc_OneShot;
+use embedded_hal::digital::blocking::{InputPin, OutputPin};
+use eos::Timestamp;
+use esp_idf_hal::adc::{self, PoweredAdc, ADC2};
+use esp_idf_hal::gpio::{Gpio0, Gpio25, Gpio26, Gpio37, Output, SubscribedInput, Unknown};
 use esp_idf_hal::{i2c, prelude::*};
 use esp_idf_sys::{self as _, esp};
 use once_cell::sync::Lazy;
@@ -77,6 +79,127 @@ fn syncer_thread(rtc: Arc<Mutex<EspRtc>>) {
             let ts = Timestamp::new(ts.seconds, ts.nanos as u32);
             if let Err(err) = rtc.lock().unwrap().set(ts.to_utc()) {
                 error!(?err, "Failed to set RTC");
+            }
+        }
+    }
+}
+
+// me when HKTs
+
+macro_rules! impl_pinstate {
+    ($name:ty) => {
+        impl $name {
+            fn set_high(mut self) -> Self {
+                self.p.set_high().unwrap();
+                self
+            }
+
+            fn set_low(mut self) -> Self {
+                self.p.set_low().unwrap();
+                self
+            }
+
+            fn read(self, adc: &mut PoweredAdc<ADC2>) -> (Self, u16) {
+                use esp_idf_hal::gpio::Pull;
+                let mut p = self
+                    .p
+                    .into_analog_atten_11db()
+                    .unwrap()
+                    .into_floating()
+                    .unwrap();
+                let r = adc.read(&mut p).unwrap();
+                let mut p = p.into_pull_up().unwrap().into_output().unwrap();
+                p.set_low().unwrap();
+
+                info!(r, pin = stringify!($name), "Analog reading");
+
+                (Self { p }, r)
+            }
+        }
+    };
+}
+
+struct PinState0 {
+    p: Gpio0<Output>,
+}
+
+impl_pinstate!(PinState0);
+
+struct PinState25 {
+    p: Gpio25<Output>,
+}
+
+impl_pinstate!(PinState25);
+
+struct PinState26 {
+    p: Gpio26<Output>,
+}
+
+impl_pinstate!(PinState26);
+
+struct PinStates {
+    g0: PinState0,
+    g25: PinState25,
+    g26: PinState26,
+}
+
+macro_rules! do_pinop {
+    ($set_pin:expr, $state:ident, $pin:ident, $tx:ident, $adc:ident) => {
+        match $set_pin.op() {
+            message::PinOperation::SetHigh => $state.$pin = $state.$pin.set_high(),
+            message::PinOperation::SetLow => $state.$pin = $state.$pin.set_low(),
+            message::PinOperation::AnalogueRead => {
+                let val;
+                ($state.$pin, val) = $state.$pin.read(&mut $adc);
+
+                let pinread = message::PinRead {
+                    pin: $set_pin.pin,
+                    value: val as f32,
+                };
+                let msg = message::Notification {
+                    body: Some(message::notification::Body::PinRead(pinread)),
+                };
+                let _ = $tx.send(msg);
+            }
+        }
+    };
+}
+
+fn pin_thread(g26: Gpio26<Unknown>, g25: Gpio25<Unknown>, g0: Gpio0<Unknown>, adc: ADC2) {
+    let mut g26 = g26.into_output().unwrap();
+    g26.set_low().unwrap();
+
+    let mut g25 = g25.into_output().unwrap();
+    g25.set_low().unwrap();
+
+    let mut g0 = g0.into_output().unwrap();
+    g0.set_low().unwrap();
+
+    let mut adc = PoweredAdc::new(
+        adc,
+        adc::config::Config {
+            resolution: adc::config::Resolution::Resolution10Bit,
+            calibration: true,
+        },
+    )
+    .unwrap();
+
+    let mut state = PinStates {
+        g0: PinState0 { p: g0 },
+        g25: PinState25 { p: g25 },
+        g26: PinState26 { p: g26 },
+    };
+
+    let rx = message::get_receiver();
+
+    let tx = bluetooth::QUEUE.0.clone();
+
+    for msg in rx {
+        if let Some(message::message::Body::SetPin(set_pin)) = msg.body {
+            match set_pin.pin() {
+                message::Pins::G26 => do_pinop!(set_pin, state, g26, tx, adc),
+                message::Pins::G25 => do_pinop!(set_pin, state, g25, tx, adc),
+                message::Pins::G0 => do_pinop!(set_pin, state, g0, tx, adc),
             }
         }
     }
@@ -148,6 +271,14 @@ fn main() -> Result<()> {
     let _syncer_thread = std::thread::Builder::new().stack_size(4096).spawn({
         let rtc = Arc::clone(&rtc);
         move || syncer_thread(rtc)
+    });
+
+    let _pin_thread = std::thread::Builder::new().stack_size(4096).spawn({
+        let g26 = pins.gpio26;
+        let g25 = pins.gpio25;
+        let g0 = pins.gpio0;
+        let adc = peripherals.adc2;
+        || pin_thread(g26, g25, g0, adc)
     });
 
     let _battery_thread = pwr.start_battery_thread();

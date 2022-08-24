@@ -12,6 +12,7 @@ bus = "2.3.0"
 bytes = "1.2.1"
 color-eyre = "0.6.2"
 const-zero = "0.1.0"
+crossbeam = "0.8.2"
 display-interface = "0.4.1"
 display-interface-spi = "0.4.1"
 eh_0_2 = { version = "0.2.7", package = "embedded-hal" }
