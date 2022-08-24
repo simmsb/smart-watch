@@ -1,6 +1,8 @@
 use core::ffi::{c_char, c_int};
 use std::cell::UnsafeCell;
 use std::ffi::{c_void, CStr};
+use std::sync::Mutex;
+use std::time::Duration;
 
 use color_eyre::eyre::eyre;
 use crossbeam::channel;
@@ -240,56 +242,62 @@ unsafe extern "C" fn ble_data_in_handler(
     0
 }
 
-unsafe fn ble_spp_server_advertise() {
-    let name = ble_svc_gap_device_name();
-    static UUIDS16: &[ble_uuid16_t] = &[unsafe { BLE_BAT_SERVICE }];
-    // static UUIDS128: &[ble_uuid128_t] = &[unsafe { BLE_LE_NRF_SERVICE }];
+pub fn ble_spp_server_advertise() {
+    // if we're exposing this we should prevent concurrent usage
+    // even this might not be safe, we should probably be doing a channel
+    static ADV_MUTEX: Mutex<()> = Mutex::new(());
+    let _handle = ADV_MUTEX.lock().unwrap();
+    unsafe {
+        let name = ble_svc_gap_device_name();
+        static UUIDS16: &[ble_uuid16_t] = &[unsafe { BLE_BAT_SERVICE }];
+        // static UUIDS128: &[ble_uuid128_t] = &[unsafe { BLE_LE_NRF_SERVICE }];
 
-    let mut fields = ble_hs_adv_fields {
-        flags: (BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP) as u8,
-        tx_pwr_lvl: BLE_HS_ADV_TX_PWR_LVL_AUTO as i8,
-        name: name as *const _,
-        name_len: strlen(name) as u8,
-        uuids16: UUIDS16.as_ptr(),
-        num_uuids16: UUIDS16.len() as u8,
-        adv_itvl: 8000,
-        // uuids128: UUIDS128.as_ptr(),
-        // num_uuids128: UUIDS128.len() as u8,
-        ..Default::default()
-    };
+        let mut fields = ble_hs_adv_fields {
+            flags: (BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP) as u8,
+            tx_pwr_lvl: BLE_HS_ADV_TX_PWR_LVL_AUTO as i8,
+            name: name as *const _,
+            name_len: strlen(name) as u8,
+            uuids16: UUIDS16.as_ptr(),
+            num_uuids16: UUIDS16.len() as u8,
+            adv_itvl: 8000,
+            // uuids128: UUIDS128.as_ptr(),
+            // num_uuids128: UUIDS128.len() as u8,
+            ..Default::default()
+        };
 
-    fields.set_tx_pwr_lvl_is_present(1);
-    fields.set_name_is_complete(1);
-    fields.set_uuids16_is_complete(1);
-    fields.set_adv_itvl_is_present(1);
+        fields.set_tx_pwr_lvl_is_present(1);
+        fields.set_name_is_complete(1);
+        fields.set_uuids16_is_complete(1);
+        fields.set_adv_itvl_is_present(1);
 
-    let rc = ble_gap_adv_set_fields(&fields);
-    if rc != 0 {
-        error!(rc, "error setting advertisement data");
-        return;
+        let rc = ble_gap_adv_set_fields(&fields);
+        if rc != 0 {
+            error!(rc, "error setting advertisement data");
+            return;
+        }
+
+        let adv_params = ble_gap_adv_params {
+            conn_mode: BLE_GAP_CONN_MODE_UND as u8,
+            disc_mode: BLE_GAP_DISC_MODE_GEN as u8,
+            ..Default::default()
+        };
+
+        let duration_ms = Duration::from_secs(60).as_millis() as i32;
+        let rc = ble_gap_adv_start(
+            OWN_ADDR_TYPE,
+            std::ptr::null(),
+            duration_ms,
+            &adv_params,
+            Some(ble_spp_server_gap_event),
+            std::ptr::null_mut(),
+        );
+        if rc != 0 {
+            error!(rc, "error enabling advertisement");
+            return;
+        }
+
+        info!("started to advertise");
     }
-
-    let adv_params = ble_gap_adv_params {
-        conn_mode: BLE_GAP_CONN_MODE_UND as u8,
-        disc_mode: BLE_GAP_DISC_MODE_GEN as u8,
-        ..Default::default()
-    };
-
-    const BLE_HS_FOREVER: i32 = 2147483647;
-    let rc = ble_gap_adv_start(
-        OWN_ADDR_TYPE,
-        std::ptr::null(),
-        BLE_HS_FOREVER,
-        &adv_params,
-        Some(ble_spp_server_gap_event),
-        std::ptr::null_mut(),
-    );
-    if rc != 0 {
-        error!(rc, "error enabling advertisement");
-        return;
-    }
-
-    info!("Done ble advertise");
 }
 
 unsafe extern "C" fn ble_spp_server_gap_event(event: *mut ble_gap_event, _arg: *mut c_void) -> i32 {
@@ -324,8 +332,6 @@ unsafe extern "C" fn ble_spp_server_gap_event(event: *mut ble_gap_event, _arg: *
         BLE_GAP_EVENT_DISCONNECT => {
             let disconnect = event_.__bindgen_anon_1.disconnect;
             info!(reason = disconnect.reason, "Disconnect");
-
-            ble_spp_server_advertise();
         }
 
         BLE_GAP_EVENT_CONN_UPDATE => {
@@ -339,7 +345,6 @@ unsafe extern "C" fn ble_spp_server_gap_event(event: *mut ble_gap_event, _arg: *
         BLE_GAP_EVENT_ADV_COMPLETE => {
             let adv_complete = event_.__bindgen_anon_1.adv_complete;
             info!(reason = adv_complete.reason, "advertise complete");
-            ble_spp_server_advertise();
         }
 
         BLE_GAP_EVENT_MTU => {

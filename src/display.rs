@@ -23,6 +23,8 @@ use mipidsi::models::{Model, ST7789};
 use mipidsi::Orientation;
 use profont::PROFONT_24_POINT;
 
+use crate::ingerland::INGERLAND;
+
 type DisplayType = mipidsi::Display<
     SPIInterfaceNoCS<
         Master<SPI2, Gpio13<Output>, Gpio15<Output>, GpioPin<InputOutput>, Gpio5<Output>>,
@@ -129,6 +131,8 @@ impl Display {
         let batt_charge = (bat_volt.clamp(3.0, 4.2) - 3.0) / (4.2 - 3.0);
         let batt_pct = (batt_charge * 100.0) as u8;
 
+        let now = now.in_timezone(INGERLAND);
+
         let text = now.format(format_spec!("%d-%m-%Y")).to_string();
         let character_style = MonoTextStyleBuilder::new()
             .font(&profont::PROFONT_24_POINT)
@@ -152,7 +156,7 @@ impl Display {
         .draw(&mut canvas)
         .map_err(|e| eyre!("Failed to draw to display: {:?}", e))?;
 
-        let text = now.format(format_spec!("%H:%M:%S")).to_string();
+        let text = now.format(format_spec!("%H:%M:%S %Z")).to_string();
         let character_style = MonoTextStyleBuilder::new()
             .font(&profont::PROFONT_24_POINT)
             .text_color(Rgb565::WHITE)

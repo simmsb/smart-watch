@@ -6,6 +6,7 @@
 #![feature(core_ffi_c)]
 #![feature(const_mut_refs)]
 #![feature(const_unsafecell_get_mut)]
+#![feature(const_option)]
 
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
@@ -17,7 +18,7 @@ use eh_0_2::prelude::_embedded_hal_adc_OneShot;
 use embedded_hal::digital::blocking::{InputPin, OutputPin};
 use eos::Timestamp;
 use esp_idf_hal::adc::{self, PoweredAdc, ADC2};
-use esp_idf_hal::gpio::{Gpio0, Gpio25, Gpio26, Gpio37, Output, SubscribedInput, Unknown};
+use esp_idf_hal::gpio::{Gpio0, Gpio25, Gpio26, Gpio37, Gpio39, Output, SubscribedInput, Unknown};
 use esp_idf_hal::{i2c, prelude::*};
 use esp_idf_sys::{self as _, esp};
 use once_cell::sync::Lazy;
@@ -29,6 +30,7 @@ use crate::utils::I2c0;
 pub mod axp192;
 pub mod bluetooth;
 pub mod display;
+pub mod ingerland;
 pub mod message;
 pub mod rtc;
 pub mod utils;
@@ -221,6 +223,7 @@ fn main() -> Result<()> {
     };
 
     esp!(unsafe { esp_idf_sys::esp_pm_configure(&pm_config as *const _ as *const _) })?;
+    unsafe { esp_idf_sys::adc_power_acquire() };
 
     let peripherals = Peripherals::take().ok_or_else(|| eyre!("Peripherals were already taken"))?;
 
@@ -248,20 +251,41 @@ fn main() -> Result<()> {
 
     let button_state = Arc::new(AtomicBool::new(false));
     let (wake_tx, wake_rx) = std::sync::mpsc::channel();
-    let btn_callback = {
+
+    let front_btn_callback = {
         let button_state = Arc::clone(&button_state);
         let wake_tx = wake_tx.clone();
         move |p: &Gpio37<SubscribedInput>| {
             let current = p.is_low().unwrap();
             let prev = button_state.swap(current, std::sync::atomic::Ordering::Relaxed);
 
-            info!(current, prev, "button");
+            info!(current, prev, "front button");
 
             if prev != current {
                 let _ = wake_tx.send(current);
             }
         }
     };
+
+    let _front_button = pin_handler!(pins.gpio37, front_btn_callback);
+
+    let side_btn_callback = {
+        let button_state = Arc::new(AtomicBool::new(false));
+
+        move |p: &Gpio39<SubscribedInput>| {
+            let current = p.is_low().unwrap();
+            let prev = button_state.swap(current, std::sync::atomic::Ordering::Relaxed);
+
+            info!(current, prev, "side button");
+
+            if prev != current && current {
+                info!("Starting advertise");
+                bluetooth::ble_spp_server_advertise();
+            }
+        }
+    };
+
+    let _side_button = pin_handler!(pins.gpio39, side_btn_callback);
 
     let _waker_thread = std::thread::spawn({
         let wake_tx = wake_tx.clone();
@@ -283,8 +307,6 @@ fn main() -> Result<()> {
 
     let _battery_thread = pwr.start_battery_thread();
 
-    let _button = pin_handler!(pins.gpio37, btn_callback);
-
     bluetooth::init_ble()?;
 
     loop {
@@ -300,6 +322,7 @@ fn main() -> Result<()> {
             );
 
             let now = rtc.lock().unwrap().read()?;
+            info!(%now, "Current utc time");
 
             display.display_time(now, batt_vol)?;
 

@@ -64,7 +64,7 @@ default = ["experimental"]
 [profile.release]
 codegen-units = 1
 incremental = false
-opt-level = 3
+opt-level = "z"
 lto = "fat"
 overflow-checks = false
 debug-assertions = false
