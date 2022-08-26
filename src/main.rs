@@ -333,13 +333,22 @@ fn main() -> Result<()> {
                 }
             }
 
-            if Instant::now() > end_time {
+            if !bluetooth::ble_connected() && Instant::now() > end_time {
                 info!("Disabling backlight");
                 pwr.set_backlight(false)?;
                 break 'inner;
             }
 
             std::thread::sleep(Duration::from_secs(1));
+        }
+
+        // seems to work?
+        esp!(unsafe {
+            esp_idf_sys::esp_sleep_enable_ext0_wakeup(esp_idf_sys::gpio_num_t_GPIO_NUM_37, 0)
+        })?;
+
+        unsafe {
+            esp!(esp_idf_sys::esp_light_sleep_start())?;
         }
 
         while wake_rx.recv().unwrap() == false {}

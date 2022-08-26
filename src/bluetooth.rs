@@ -1,12 +1,15 @@
 use core::ffi::{c_char, c_int};
 use std::cell::UnsafeCell;
 use std::ffi::{c_void, CStr};
-use std::sync::Mutex;
+use std::ptr::null_mut;
 use std::sync::atomic::AtomicU8;
+use std::sync::{Mutex, Arc, MutexGuard};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use color_eyre::eyre::eyre;
 use crossbeam::channel;
+use esp_idf_svc::eventloop::EspEventFetchData;
 use esp_idf_sys::{
     ble_gap_adv_params, ble_gap_adv_set_fields, ble_gap_adv_start, ble_gap_conn_desc,
     ble_gap_conn_find, ble_gap_event, ble_gatt_access_ctxt, ble_gatt_chr_def,
@@ -14,18 +17,18 @@ use esp_idf_sys::{
     ble_gatts_count_cfg, ble_hs_adv_fields, ble_hs_cfg, ble_hs_id_copy_addr, ble_hs_id_infer_auto,
     ble_hs_mbuf_from_flat, ble_hs_mbuf_to_flat, ble_hs_util_ensure_addr, ble_store_util_status_rr,
     ble_uuid128_t, ble_uuid16_t, ble_uuid_cmp, ble_uuid_t, ble_uuid_to_str, esp,
-    esp_nimble_hci_and_controller_init, nimble_port_freertos_deinit, nimble_port_freertos_init,
-    nimble_port_init, nimble_port_run, os_mbuf, os_mbuf_append, strlen,
-    BLE_ATT_ERR_INSUFFICIENT_RES, BLE_GAP_CONN_MODE_UND, BLE_GAP_DISC_MODE_GEN,
-    BLE_GAP_EVENT_ADV_COMPLETE, BLE_GAP_EVENT_CONNECT, BLE_GAP_EVENT_CONN_UPDATE,
-    BLE_GAP_EVENT_DISCONNECT, BLE_GAP_EVENT_MTU, BLE_GATT_ACCESS_OP_READ_CHR,
-    BLE_GATT_ACCESS_OP_WRITE_CHR, BLE_GATT_CHR_F_NOTIFY, BLE_GATT_CHR_F_READ, BLE_GATT_CHR_F_WRITE,
-    BLE_GATT_REGISTER_OP_CHR, BLE_GATT_REGISTER_OP_DSC, BLE_GATT_REGISTER_OP_SVC,
-    BLE_GATT_SVC_TYPE_PRIMARY, BLE_HS_ADV_F_BREDR_UNSUP, BLE_HS_ADV_F_DISC_GEN,
-    BLE_HS_ADV_TX_PWR_LVL_AUTO, BLE_UUID_STR_LEN, BLE_UUID_TYPE_128, BLE_UUID_TYPE_16,
-    CONFIG_BT_NIMBLE_MAX_CONNECTIONS,
+    esp_nimble_hci_and_controller_deinit, esp_nimble_hci_and_controller_init,
+    nimble_port_freertos_deinit, nimble_port_freertos_init, nimble_port_init, nimble_port_run,
+    os_mbuf, os_mbuf_append, strlen, BLE_ATT_ERR_INSUFFICIENT_RES, BLE_GAP_CONN_MODE_UND,
+    BLE_GAP_DISC_MODE_GEN, BLE_GAP_EVENT_ADV_COMPLETE, BLE_GAP_EVENT_CONNECT,
+    BLE_GAP_EVENT_CONN_UPDATE, BLE_GAP_EVENT_DISCONNECT, BLE_GAP_EVENT_MTU,
+    BLE_GATT_ACCESS_OP_READ_CHR, BLE_GATT_ACCESS_OP_WRITE_CHR, BLE_GATT_CHR_F_NOTIFY,
+    BLE_GATT_CHR_F_READ, BLE_GATT_CHR_F_WRITE, BLE_GATT_REGISTER_OP_CHR, BLE_GATT_REGISTER_OP_DSC,
+    BLE_GATT_REGISTER_OP_SVC, BLE_GATT_SVC_TYPE_PRIMARY, BLE_HS_ADV_F_BREDR_UNSUP,
+    BLE_HS_ADV_F_DISC_GEN, BLE_HS_ADV_TX_PWR_LVL_AUTO, BLE_UUID_STR_LEN, BLE_UUID_TYPE_128,
+    BLE_UUID_TYPE_16, CONFIG_BT_NIMBLE_MAX_CONNECTIONS, ble_hs_stop, ble_hs_stop_listener, nimble_port_stop, nimble_port_deinit,
 };
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use prost::Message;
 use tracing::{error, info};
 
@@ -36,6 +39,8 @@ pub static QUEUE: Lazy<(
     channel::Sender<message::Notification>,
     channel::Receiver<message::Notification>,
 )> = Lazy::new(|| channel::bounded(4));
+
+static TX_THREAD: OnceCell<JoinHandle<()>> = OnceCell::new();
 
 static CONN_COUNT: AtomicU8 = AtomicU8::new(0);
 
@@ -161,13 +166,6 @@ unsafe extern "C" fn ble_spp_server_on_sync() {
     info!(device_address = ?addr_val, "Found device address");
 
     ble_spp_server_advertise();
-}
-
-unsafe extern "C" fn ble_spp_server_host_task(_param: *mut c_void) {
-    info!("BLE host task started");
-
-    nimble_port_run();
-    nimble_port_freertos_deinit();
 }
 
 unsafe extern "C" fn ble_batt_handler(
@@ -422,6 +420,52 @@ fn tx_thread() {
 static mut CONNECTION_HANDLES: [u16; CONFIG_BT_NIMBLE_MAX_CONNECTIONS as usize] =
     [0; CONFIG_BT_NIMBLE_MAX_CONNECTIONS as usize];
 
+unsafe extern "C" fn ble_spp_server_host_task(_param: *mut c_void) {
+    info!("BLE host task started");
+
+    nimble_port_run();
+    nimble_port_freertos_deinit();
+}
+
+unsafe extern "C" fn stop_fn(_status: c_int, arg: *mut c_void) {
+    info!("Bluetooth hs seems to have stopped");
+    // just serves to drop the handle
+    let _h = Arc::from_raw(arg as *mut _ as *const MutexGuard<()>);
+}
+
+pub fn stop_ble() -> color_eyre::Result<()> {
+    static STOP_LOCK: Mutex<()> = Mutex::new(());
+    static STOPPED_LOCK: Mutex<()> = Mutex::new(());
+
+    let _h = STOP_LOCK.lock().unwrap();
+    let h = STOPPED_LOCK.lock().unwrap();
+    let h = Arc::into_raw(Arc::new(h));
+
+    unsafe {
+        let mut listener = ble_hs_stop_listener::default();
+        if let Err(e) = esp!(ble_hs_stop(&mut listener, Some(stop_fn), h as *const _ as *mut _)) {
+            std::mem::drop(Arc::from_raw(h));
+            return Err(e)?;
+        }
+    }
+
+    info!("Dispatched stop request");
+
+    // ok, now we try to lock the inner lock again, it *should* unlock when stop_fn runs
+    let _h2 = STOPPED_LOCK.lock().unwrap();
+
+    // now we can call the other deinit functions?
+
+    unsafe {
+        esp!(nimble_port_stop())?;
+        nimble_port_deinit();
+        esp!(esp_nimble_hci_and_controller_deinit())?
+    }
+
+
+    Ok(())
+}
+
 pub fn init_ble() -> color_eyre::Result<()> {
     unsafe {
         if let Err(err) = esp!(esp_idf_sys::nvs_flash_init()) {
@@ -461,7 +505,7 @@ pub fn init_ble() -> color_eyre::Result<()> {
         nimble_port_freertos_init(Some(ble_spp_server_host_task));
     }
 
-    std::thread::spawn(|| tx_thread());
+    TX_THREAD.get_or_init(|| std::thread::spawn(|| tx_thread()));
 
     Ok(())
 }
